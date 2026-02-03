@@ -92,9 +92,8 @@ def scan_ranking(category, tickers):
                         "コード": ticker.replace(".T", ""),
                         "現在値": curr,
                         "寄付比": change,
-                        "判定": status
-                    })
-                except: continue
+                        "判定": status})
+                    except: continue
             
             # ランキング作成
             rank_df = pd.DataFrame(results)
