@@ -3,7 +3,7 @@ import pandas as pd
 import yfinance as yf
 
 # ページ設定
-st.set_page_config(page_title="最強銘柄スキャナー・プライム完全版", layout="wide")
+st.set_page_config(page_title="最強銘柄スキャナー・VWAP搭載", layout="wide")
 
 # --- パスワード認証 ---
 MY_PASSWORD = "stock testa" 
@@ -18,11 +18,11 @@ if not st.session_state.auth:
     st.stop()
 
 st.title("⚡️ プライム市場・完全網羅スキャン")
-st.caption("日経225 ＋ 売買代金上位（約320社）を一括監視")
+st.caption("VWAP乖離率を搭載：エントリータイミングを逃さない")
 
-# --- 監視リスト（住友電工、フジクラ、キーエンス等を追加し完全網羅） ---
+# --- 監視リスト（約320銘柄） ---
 TARGET_STOCKS = {
-    # --- 電線・非鉄・金属（ここを追加！） ---
+    # --- 電線・非鉄・金属 ---
     "5802.T": "住友電工", "5803.T": "フジクラ", "5801.T": "古河電工", "5713.T": "住友鉱",
     "5711.T": "三菱マ", "5714.T": "DOWA", "5706.T": "三井金", "5726.T": "大阪チタ",
     "5727.T": "東邦チタ", "3436.T": "SUMCO", "5938.T": "LIXIL",
@@ -98,19 +98,19 @@ TARGET_STOCKS = {
 }
 
 def scan_ranking(stock_dict):
-    if st.button('📡 プライム市場(完全版)をスキャン', type="primary"):
+    if st.button('📡 市場をスキャンする', type="primary"):
         msg = st.empty()
         bar = st.progress(0)
-        msg.text(f"全{len(stock_dict)}銘柄のデータを取得中...（10〜20秒ほどかかります）")
+        msg.text(f"データ取得中... 対象: {len(stock_dict)}銘柄")
         
         tickers = list(stock_dict.keys())
         
         try:
-            # yfinanceで一括取得
+            # yfinanceで一括取得（日足）
             df = yf.download(tickers, period="1d", interval="1d", progress=False, group_by='ticker')
             
             bar.progress(50)
-            msg.text("ランキング分析中...")
+            msg.text("VWAP計算 & ランキング生成中...")
             
             results = []
             for ticker in tickers:
@@ -122,19 +122,32 @@ def scan_ranking(stock_dict):
                     data = df[ticker].iloc[-1]
                     curr = data['Close']
                     op = data['Open']
-                    vol = data['Volume']
+                    high = data['High']
+                    low = data['Low']
                     
                     if pd.isna(curr) or pd.isna(op) or op == 0: continue
                     
                     # 寄付比
                     change = (curr - op) / op * 100
                     
-                    # 判定
+                    # 簡易VWAP計算 (高値+安値+終値)/3
+                    # ※日中の正確なTickデータではないが、スキャン用の目安としては十分機能する
+                    vwap = (high + low + curr) / 3
+                    
+                    # VWAP乖離率 (%)
+                    # プラスならVWAPより上（強い）、マイナスなら下（弱い）
+                    vwap_gap = (curr - vwap) / vwap * 100
+                    
+                    # 判定ロジック
                     status = ""
-                    if change > 3.0: status = "🔥🔥 急騰"
-                    elif change > 1.5: status = "🚀 強い"
-                    elif change > 0.5: status = "📈 堅調"
-                    elif change < -1.5: status = "📉 弱い"
+                    # 3%以上上げていて、かつVWAPより2%以上高い -> 加熱気味（押し目待ち）
+                    if change > 3.0: 
+                        if vwap_gap > 2.0: status = "🔥🔥 加熱"
+                        else: status = "🚀 トレンド"
+                    elif change > 1.0:
+                        if vwap_gap > 0: status = "📈 堅調"
+                        else: status = "⚠️ 失速" # 上げてるけどVWAP割った
+                    elif change < -1.0: status = "📉 弱い"
                     else: status = "-"
 
                     results.append({
@@ -142,8 +155,9 @@ def scan_ranking(stock_dict):
                         "コード": ticker.replace(".T", ""),
                         "寄付比": change,
                         "現在値": curr,
-                        "判定": status,
-                        "出来高": vol
+                        "VWAP": vwap,
+                        "乖離%": vwap_gap,
+                        "判定": status
                     })
                 except: continue
             
@@ -154,7 +168,6 @@ def scan_ranking(stock_dict):
             if not rank_df.empty:
                 # 寄付比順
                 rank_df = rank_df.sort_values(by="寄付比", ascending=False)
-                # 上昇銘柄のみ
                 rank_df = rank_df[rank_df['寄付比'] > 0]
                 
                 show_df = pd.DataFrame()
@@ -162,12 +175,28 @@ def scan_ranking(stock_dict):
                 show_df['コード'] = rank_df['コード']
                 show_df['寄付比'] = rank_df['寄付比'].map(lambda x: f"+{x:.2f}%")
                 show_df['現在値'] = rank_df['現在値'].map(lambda x: f"{x:,.0f}")
+                show_df['VWAP'] = rank_df['VWAP'].map(lambda x: f"{x:,.0f}")
+                
+                # 乖離率は色付けしたいので、プラスなら赤、マイナスなら青っぽく見えるように符号をつける
+                show_df['乖離'] = rank_df['乖離%'].map(lambda x: f"{x:+.2f}%")
                 show_df['判定'] = rank_df['判定']
                 
                 msg.empty()
                 bar.empty()
                 st.success(f"スキャン完了！上昇銘柄: {len(show_df)}件")
-                st.dataframe(show_df, use_container_width=True, hide_index=True)
+                
+                # データフレーム表示
+                st.dataframe(
+                    show_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "乖離": st.column_config.TextColumn(
+                            "VWAP乖離",
+                            help="プラスならVWAPより上（強気）、マイナスなら下（弱気）"
+                        ),
+                    }
+                )
             else:
                 msg.empty()
                 bar.empty()
