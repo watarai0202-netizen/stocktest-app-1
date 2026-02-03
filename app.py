@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 import re
 
 # ページ設定
-st.set_page_config(page_title="最強銘柄抽出くん・株探Ver", layout="centered")
+st.set_page_config(page_title="最強銘柄抽出くん・みんかぶ版", layout="centered")
 
 # --- セキュリティ設定 ---
 MY_PASSWORD = "stock testa" 
@@ -18,60 +18,61 @@ if password != MY_PASSWORD:
 
 # --- メインアプリ ---
 st.title("⚡️ リアルタイム強勢銘柄")
-st.caption("株探ランキング × 5分足構造分析")
+st.caption("みんかぶランキング × 5分足構造分析")
 
 # --- 関数定義 ---
 
-def get_ranking_kabutan(market_type):
+def get_ranking_minkabu(market_slug):
     """
-    株探（Kabutan）から売買代金ランキングを取得
-    market_type: '1'=Prime, '2'=Standard, '3'=Growth
+    みんかぶから売買代金ランキングを取得
+    market_slug: 'prime', 'standard', 'growth'
     """
-    url = f"https://kabutan.jp/ranking/?mode=1&market={market_type}"
+    # みんかぶのURLパラメータ設定
+    url = f"https://minkabu.jp/ranking/stock/turnover?market={market_slug}"
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     
     try:
         res = requests.get(url, headers=headers, timeout=10)
         
-        # 株探もブロックする場合の対策
         if res.status_code != 200:
-            st.error(f"株探アクセスエラー (Status: {res.status_code})")
+            st.error(f"みんかぶアクセスエラー (Status: {res.status_code})")
             return []
             
         soup = BeautifulSoup(res.text, 'html.parser')
         data_list = []
         
-        # 株探のテーブル構造に合わせて解析
-        # <table class="stock_table">
-        table = soup.select_one('table.stock_table')
-        if not table:
-            return []
-            
-        rows = table.select('tbody tr')
+        # テーブルを取得
+        rows = soup.select('table tbody tr')
         
+        if not rows:
+            st.warning("ランキング表が見つかりませんでした。")
+            return []
+
         for row in rows:
             try:
-                tds = row.select('td')
-                if len(tds) < 4: continue
+                # 銘柄コードの抽出 (/stock/xxxx)
+                link_el = row.select_one('a[href^="/stock/"]')
+                if not link_el: continue
                 
-                # コードと名称 (2列目)
-                el_link = tds[1].select_one('a')
-                if not el_link: continue
-                
-                # リンクからコード抽出 (/stock/?code=xxxx)
-                href = el_link.get('href')
-                code_match = re.search(r'code=(\d+)', href)
+                href = link_el.get('href')
+                code_match = re.search(r'/stock/(\d+)', href)
                 if not code_match: continue
                 code = code_match.group(1)
                 
-                name = el_link.text
+                # 銘柄名
+                name = link_el.text.strip()
                 
-                # 現在値 (4列目)
-                price_text = tds[3].get_text(strip=True).replace(',', '')
-                # '1234.5' などを抽出
+                # 現在値（tdの並び順から推定）
+                # みんかぶのテーブル構造: 順位, 銘柄名, 現在値, 前日比, ...
+                tds = row.select('td')
+                if len(tds) < 3: continue
+                
+                price_text = tds[2].get_text(strip=True).replace(',', '')
                 price_match = re.search(r'[\d\.]+', price_text)
+                
                 if price_match:
                     current_price = float(price_match.group())
                 else:
@@ -91,7 +92,7 @@ def get_ranking_kabutan(market_type):
         return []
 
 def calculate_vwap_and_status(df_5m, current_realtime_price):
-    """AIロジック（変更なし）"""
+    """AIロジック"""
     if df_5m.empty: return None, None, "データ不足"
     
     df_5m['Typical_Price'] = (df_5m['High'] + df_5m['Low'] + df_5m['Close']) / 3
@@ -108,27 +109,27 @@ def calculate_vwap_and_status(df_5m, current_realtime_price):
     detail = ""
 
     if vwap_divergence > 3.0:
-        status = "✋ 加熱感あり"
-        detail = f"乖離 +{vwap_divergence:.1f}%"
+        status = "✋ 加熱感"
+        detail = f"+{vwap_divergence:.1f}%"
     elif 0.5 < vwap_divergence <= 3.0:
-        status = "📈 上昇トレンド"
+        status = "🚀 トレンド"
         detail = "順張り"
     elif -0.5 <= vwap_divergence <= 0.5:
-        status = "⚖️ VWAP付近"
-        detail = "攻防中"
+        status = "⚖️ 攻防"
+        detail = "様子見"
     elif vwap_divergence < -0.5:
-        status = "📉 弱含み"
-        detail = f"乖離 {vwap_divergence:.1f}%"
+        status = "📉 軟調"
+        detail = f"{vwap_divergence:.1f}%"
 
     return vwap, status, detail
 
-def analyze_market(market_name, market_type_id):
+def analyze_market(market_name, market_slug):
     """市場分析実行"""
-    if st.button(f'⚡️ {market_name}を分析', key=market_type_id):
+    if st.button(f'⚡️ {market_name}を分析', key=market_slug):
         
-        # 1. ランキング取得 (株探から)
-        with st.spinner(f'株探から{market_name}ランキングを取得中...'):
-            ranking_data = get_ranking_kabutan(market_type_id)
+        # 1. ランキング取得 (みんかぶから)
+        with st.spinner(f'みんかぶから{market_name}ランキングを取得中...'):
+            ranking_data = get_ranking_minkabu(market_slug)
             
             if not ranking_data:
                 st.error("ランキングデータの取得に失敗しました。")
@@ -150,14 +151,13 @@ def analyze_market(market_name, market_type_id):
 
             final_results = []
             
-            # 始値の取得処理
+            # 始値
             try:
                 if isinstance(df_daily.columns, pd.MultiIndex):
                     open_prices = df_daily.xs('Open', level=0, axis=1).iloc[-1]
                 else:
                     open_prices = df_daily['Open'].iloc[-1]
-            except:
-                open_prices = {}
+            except: open_prices = {}
 
             # ループ処理
             for i, row in df_rank.iterrows():
@@ -169,11 +169,8 @@ def analyze_market(market_name, market_type_id):
                     
                     open_val = open_prices.get(yf_code)
 
-                    # 始値が取れない、または0の場合はスキップ
-                    if pd.isna(open_val) or open_val == 0: 
-                        continue
+                    if pd.isna(open_val) or open_val == 0: continue
                     
-                    # 寄付比計算
                     rise = (curr_val - open_val) / open_val * 100
                     
                     # AI判定
@@ -206,19 +203,15 @@ def analyze_market(market_name, market_type_id):
                 df_show['寄付比'] = df_res['寄付比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
                 df_show['現在値'] = df_res['現在値'].map(lambda x: f"{x:,.0f}")
                 df_show['AI判定'] = df_res['AI判定']
+                df_show['詳細'] = df_res['詳細']
                 
                 st.success(f"分析完了！ ({len(df_show)}銘柄)")
-                st.dataframe(
-                    df_show,
-                    use_container_width=True,
-                    hide_index=True
-                )
+                st.dataframe(df_show, use_container_width=True, hide_index=True)
             else:
-                st.warning("条件に合う銘柄が見つかりませんでした（APIの遅延の可能性があります）。")
+                st.warning("データが見つかりませんでした。")
 
 # --- UIタブ ---
-# 株探の市場コード: 1=プライム, 2=スタンダード, 3=グロース
 t1, t2, t3 = st.tabs(["プライム", "スタンダード", "グロース"])
-with t1: analyze_market("プライム", "1")
-with t2: analyze_market("スタンダード", "2")
-with t3: analyze_market("グロース", "3")
+with t1: analyze_market("プライム", "prime")
+with t2: analyze_market("スタンダード", "standard")
+with t3: analyze_market("グロース", "growth")
