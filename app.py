@@ -18,10 +18,9 @@ if not st.session_state.auth:
     st.stop()
 
 st.title("⚡️ 全自動マーケットスキャナー")
-st.caption("Mac不要・クラウド稼働版：主要激動銘柄を一斉監視")
+st.caption("クラウド稼働版：主要激動銘柄を一斉監視")
 
 # --- 監視リスト（デイトレで資金が入りやすい約150銘柄を厳選） ---
-# ここにある銘柄なら、Yahooを見に行かなくても確実にデータが取れます
 TARGET_STOCKS = {
     "グロース・新興": [
         "5253.T", "5032.T", "9166.T", "5595.T", "5892.T", "2160.T", "4592.T", 
@@ -59,7 +58,7 @@ def scan_ranking(category, tickers):
         progress_bar = st.progress(0, text="データ収集中...")
         
         try:
-            # yfinanceで一括取得（サーバー負荷が低いのでブロックされない）
+            # yfinanceで一括取得
             df = yf.download(tickers, period="1d", interval="1d", progress=False, group_by='ticker')
             
             progress_bar.progress(50, text="ランキング生成中...")
@@ -71,14 +70,14 @@ def scan_ranking(category, tickers):
                     if ticker in df.columns.levels[0]:
                         data = df[ticker].iloc[-1]
                     else:
-                        continue # データなし
+                        continue 
                         
                     curr = data['Close']
                     op = data['Open']
                     
                     if pd.isna(curr) or pd.isna(op) or op == 0: continue
                     
-                    # 寄付比（始値からの上昇率）
+                    # 寄付比
                     change = (curr - op) / op * 100
                     
                     # 判定
@@ -97,7 +96,7 @@ def scan_ranking(category, tickers):
                     })
                 except: continue
             
-            # ランキング作成（上昇率順）
+            # ランキング作成
             rank_df = pd.DataFrame(results)
             if not rank_df.empty:
                 rank_df = rank_df.sort_values(by="寄付比", ascending=False)
