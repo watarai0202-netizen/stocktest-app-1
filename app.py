@@ -20,7 +20,7 @@ if not st.session_state.auth:
 st.title("⚡️ 全自動マーケットスキャナー")
 st.caption("クラウド稼働版：主要激動銘柄を一斉監視")
 
-# --- 監視リスト（デイトレで資金が入りやすい約150銘柄を厳選） ---
+# --- 監視リスト ---
 TARGET_STOCKS = {
     "グロース・新興": [
         "5253.T", "5032.T", "9166.T", "5595.T", "5892.T", "2160.T", "4592.T", 
@@ -55,29 +55,32 @@ TARGET_STOCKS = {
 
 def scan_ranking(category, tickers):
     if st.button(f'📡 {category} をスキャン', key=category):
-        progress_bar = st.progress(0, text="データ収集中...")
+        # プレースホルダー作成
+        msg = st.empty()
+        msg.text("データ収集中...")
         
         try:
             # yfinanceで一括取得
             df = yf.download(tickers, period="1d", interval="1d", progress=False, group_by='ticker')
             
-            progress_bar.progress(50, text="ランキング生成中...")
+            msg.text("ランキング生成中...")
             
             results = []
             for ticker in tickers:
                 try:
-                    # データ抽出
-                    if ticker in df.columns.levels[0]:
-                        data = df[ticker].iloc[-1]
-                    else:
-                        continue 
-                        
+                    # データがあるか確認
+                    if ticker not in df.columns.levels[0]:
+                        continue
+                    
+                    # データを抽出
+                    data = df[ticker].iloc[-1]
                     curr = data['Close']
                     op = data['Open']
                     
-                    if pd.isna(curr) or pd.isna(op) or op == 0: continue
+                    if pd.isna(curr) or pd.isna(op) or op == 0:
+                        continue
                     
-                    # 寄付比
+                    # 寄付比（始値からの上昇率）
                     change = (curr - op) / op * 100
                     
                     # 判定
@@ -92,32 +95,34 @@ def scan_ranking(category, tickers):
                         "コード": ticker.replace(".T", ""),
                         "現在値": curr,
                         "寄付比": change,
-                        "判定": status})
-                    except: continue
+                        "判定": status
+                    })
+                except:
+                    continue
             
-            # ランキング作成
+            # ランキング表示
             rank_df = pd.DataFrame(results)
             if not rank_df.empty:
                 rank_df = rank_df.sort_values(by="寄付比", ascending=False)
-                # プラス圏のみ表示
+                # 上昇しているものだけ表示
                 rank_df = rank_df[rank_df['寄付比'] > 0]
                 
-                # 表示整形
+                # 表示用に整形
                 show_df = pd.DataFrame()
                 show_df['コード'] = rank_df['コード']
                 show_df['寄付比'] = rank_df['寄付比'].map(lambda x: f"+{x:.2f}%")
                 show_df['現在値'] = rank_df['現在値'].map(lambda x: f"{x:,.0f}")
                 show_df['判定'] = rank_df['判定']
                 
-                progress_bar.empty()
+                msg.empty() # メッセージを消す
                 st.success(f"スキャン完了！上昇銘柄: {len(show_df)}件")
                 st.dataframe(show_df, use_container_width=True, hide_index=True)
             else:
-                progress_bar.empty()
+                msg.empty()
                 st.warning("現在、上昇している銘柄はありません。")
                 
         except Exception as e:
-            st.error(f"エラー: {e}")
+            st.error(f"エラーが発生しました: {e}")
 
 # --- メイン画面 ---
 t1, t2, t3 = st.tabs(["🚀 グロース", "🏢 スタンダード", "🦁 プライム"])
