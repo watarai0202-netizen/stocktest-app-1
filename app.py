@@ -7,7 +7,7 @@ import re
 import numpy as np  # 計算用にnumpy追加
 
 # ページ設定
-st.set_page_config(page_title="最強銘柄抽出くん・改", layout="mobile")
+st.set_page_config(page_title="最強銘柄抽出くん・改", layout="centered")
 
 # --- セキュリティ設定 ---
 MY_PASSWORD = "stock testa" 
