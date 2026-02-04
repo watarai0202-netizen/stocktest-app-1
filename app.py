@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import os  # ★追加：ファイルを探すための機能
 
 # --- 設定 ---
 st.set_page_config(page_title="全銘柄完全スキャナー", layout="wide")
@@ -24,37 +25,55 @@ filter_level = st.sidebar.radio(
     ("Lv.3 神7 (TOP 7)", "Lv.2 精鋭 (🔥🚀)", "Lv.1 全表示")
 )
 
-# 2. 売買代金フィルター（スライダーで調整可能に！）
+# 2. 売買代金フィルター
 min_trading_value = st.sidebar.slider(
     "💰 最低売買代金 (億円)", 
     min_value=3, max_value=50, value=15, step=1,
     help="これ以下の過疎株は足切りします。デイトレなら10億以上推奨。"
 )
 
-# 3. RVOLフィルター（出来高急増度）
+# 3. RVOLフィルター
 min_rvol = st.sidebar.slider(
     "📢 出来高急増度 (倍)",
     min_value=0.5, max_value=5.0, value=1.2, step=0.1,
-    help="普段の平均より何倍の出来高があるか。1.0倍以上で「普段より活発」。"
+    help="普段の平均より何倍の出来高があるか。"
 )
 
-uploaded_file = st.sidebar.file_uploader("銘柄リスト (data_j.xls)", type=["xls", "xlsx"])
+# ★ここが進化：ファイル自動探索ロジック
+st.sidebar.write("---")
+uploaded_file = st.sidebar.file_uploader("銘柄リスト更新 (任意)", type=["xls", "xlsx"])
 
 # デフォルト（ない時用）
 DEFAULT_DB = {"7203.T": ["トヨタ", "自動車"], "9984.T": ["SBG", "投資"]}
 
-def get_tickers_from_file(file):
+def get_tickers_from_file(file_obj=None, file_path=None):
+    """
+    アップロードされたファイル(file_obj) または
+    GitHubにあるファイル(file_path) から読み込む
+    """
     try:
-        if file.name.endswith('.xls'):
-            try: df = pd.read_excel(file, engine='xlrd')
-            except: 
-                file.seek(0)
-                df = pd.read_excel(file, engine='openpyxl')
-        else:
-            try: df = pd.read_excel(file, engine='openpyxl')
-            except:
-                file.seek(0)
-                df = pd.read_excel(file, engine='xlrd')
+        df = None
+        # 1. アップロードファイルがある場合
+        if file_obj is not None:
+            if file_obj.name.endswith('.xls'):
+                try: df = pd.read_excel(file_obj, engine='xlrd')
+                except: 
+                    file_obj.seek(0)
+                    df = pd.read_excel(file_obj, engine='openpyxl')
+            else:
+                try: df = pd.read_excel(file_obj, engine='openpyxl')
+                except:
+                    file_obj.seek(0)
+                    df = pd.read_excel(file_obj, engine='xlrd')
+        
+        # 2. GitHub上のファイルがある場合（アップロードがない時）
+        elif file_path is not None:
+            if file_path.endswith('.xls'):
+                df = pd.read_excel(file_path, engine='xlrd')
+            else:
+                df = pd.read_excel(file_path, engine='openpyxl')
+
+        if df is None: return [], {}
             
         prime_df = df[df['市場・商品区分'] == 'プライム（内国株式）']
         tickers = []
@@ -74,13 +93,33 @@ st.title("⚡️ プライム・激辛スキャナー")
 st.caption(f"条件: 売買代金 {min_trading_value}億円以上 & 出来高急増 {min_rvol}倍以上")
 
 def scan():
-    if uploaded_file:
-        tickers, info_db = get_tickers_from_file(uploaded_file)
-        st.success(f"📂 {len(tickers)} 銘柄をスキャンします")
+    # --- ファイル読み込みの優先順位決定 ---
+    tickers = []
+    info_db = {}
+    
+    # 1. PC/GitHubにあるファイルをチェック
+    local_file = None
+    if os.path.exists("data_j.xls"):
+        local_file = "data_j.xls"
+    elif os.path.exists("data_j.xlsx"):
+        local_file = "data_j.xlsx"
+
+    # 2. 読み込み実行
+    if uploaded_file is not None:
+        # 手動アップロードがあればそっち優先（月1更新用）
+        tickers, info_db = get_tickers_from_file(file_obj=uploaded_file)
+        st.success(f"📂 手動ファイルを読み込みました: {len(tickers)} 銘柄")
+    
+    elif local_file is not None:
+        # 手動がなければ、GitHub上のファイルを使う
+        tickers, info_db = get_tickers_from_file(file_path=local_file)
+        st.info(f"📂 自動読み込み完了 ({local_file}): {len(tickers)} 銘柄")
+        
     else:
+        # どっちもない場合
         tickers = list(DEFAULT_DB.keys())
         info_db = DEFAULT_DB
-        st.warning("⚠️ デフォルトリスト")
+        st.warning("⚠️ 銘柄リストが見つかりません。PCからGitHubに 'data_j.xls' をアップロードしてください。")
 
     if st.button('📡 スキャン開始', type="primary"):
         status_area = st.empty()
@@ -88,7 +127,6 @@ def scan():
         status_area.text(f"データ取得中... ({len(tickers)}銘柄)")
         
         try:
-            # 5日分取得して平均出来高を出す
             df = yf.download(tickers, period="5d", interval="1d", progress=False, group_by='ticker')
             
             bar.progress(50)
@@ -102,7 +140,7 @@ def scan():
 
                 try:
                     data = df[ticker].dropna()
-                    if len(data) < 5: continue # 5日分のデータがないと平均出せないのでスキップ
+                    if len(data) < 5: continue
 
                     latest = data.iloc[-1]
                     prev = data.iloc[-2]
@@ -112,31 +150,18 @@ def scan():
                     vol = latest['Volume']
                     prev_close = prev['Close']
                     
-                    # 5日平均出来高の計算
                     avg_vol = data['Volume'].mean()
                     if avg_vol == 0: continue
-                    
-                    # ★RVOL（相対出来高）の計算
                     rvol = vol / avg_vol 
-                    
-                    # 売買代金（億円）
                     trading_value = (curr * vol) / 100000000
 
-                    # ---------------------------
-                    # 🚫 足切りゾーン
-                    # ---------------------------
-                    # 1. 売買代金フィルター
                     if trading_value < min_trading_value: continue
-                    
-                    # 2. RVOLフィルター（過疎株除外）
                     if rvol < min_rvol: continue
-
                     if pd.isna(curr) or pd.isna(op) or prev_close == 0: continue
                     
                     open_change = (curr - op) / op * 100
                     day_change = (curr - prev_close) / prev_close * 100
                     
-                    # ランク判定
                     status = "-"
                     priority = 0
                     
@@ -159,13 +184,13 @@ def scan():
                         "コード": ticker.replace(".T", ""),
                         "銘柄名": info[0],
                         "売買代金": trading_value,
-                        "RVOL": rvol, # 表示用
+                        "RVOL": rvol,
                         "寄付比": open_change,
                         "前日比": day_change,
                         "現在値": curr,
                         "状態": status,
                         "業種": info[1],
-                        "sort_key": trading_value # 売買代金順に並べる（一番金が入ってる順）
+                        "sort_key": trading_value
                     })
                     
                 except: continue
@@ -175,19 +200,15 @@ def scan():
             
             if results:
                 df_res = pd.DataFrame(results)
-                # 売買代金（注目度）順に並び替え
                 df_res = df_res.sort_values(by="sort_key", ascending=False)
                 
-                # Lv.3は強制的にTOP7
                 if filter_level == "Lv.3 神7 (TOP 7)":
                     df_res = df_res.head(7)
                 
-                # 表示件数を50件に制限（それ以上は見ても迷うだけ）
                 df_res = df_res.head(50)
 
                 st.success(f"💎 厳選完了: {len(df_res)}件 (売買代金順)")
                 
-                # 表示用整形
                 show_df = df_res[[
                     "状態", "コード", "銘柄名", "売買代金", "RVOL", "寄付比", "前日比", "現在値", "業種"
                 ]].copy()
@@ -196,7 +217,7 @@ def scan():
                 show_df['前日比'] = show_df['前日比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
                 show_df['現在値'] = show_df['現在値'].map(lambda x: f"{x:,.0f}")
                 show_df['売買代金'] = show_df['売買代金'].map(lambda x: f"{x:.1f}億円")
-                show_df['RVOL'] = show_df['RVOL'].map(lambda x: f"{x:.2f}倍") # 注目度
+                show_df['RVOL'] = show_df['RVOL'].map(lambda x: f"{x:.2f}倍")
                 
                 st.dataframe(show_df, use_container_width=True, hide_index=True, height=800)
             else:
