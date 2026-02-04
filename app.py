@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
-import pytz
 
 # --- 設定 ---
 st.set_page_config(page_title="全銘柄完全スキャナー", layout="wide")
@@ -20,7 +18,12 @@ if not st.session_state.auth:
 
 # --- サイドバー：設定 ---
 st.sidebar.title("⚙️ スキャン設定")
-st.sidebar.info("JPXの「東証上場銘柄一覧」をアップロードすると、プライム全銘柄を対象にします。")
+
+# ★ここが新機能：厳選レベルの選択
+filter_level = st.sidebar.radio(
+    "🔍 厳選モード",
+    ("Lv.3 神7 (TOP 7)", "Lv.2 精鋭 (🔥🚀のみ)", "Lv.1 全表示 (📈含む)")
+)
 
 uploaded_file = st.sidebar.file_uploader("銘柄リスト (data_j.xls)", type=["xls", "xlsx"])
 
@@ -31,69 +34,69 @@ DEFAULT_DB = {
     "7203.T": ["トヨタ", "自動車"], "8306.T": ["三菱UFJ", "銀行"],
     "9984.T": ["ソフトバンクG", "AI"], "9983.T": ["ファストリ", "小売"],
     "9101.T": ["日本郵船", "海運"], "4063.T": ["信越化学", "化学"],
-    # ...（容量削減のため省略しますが、ファイルがない時はこれらが動きます）
 }
 
 def get_tickers_from_file(file):
-    """JPXのエクセルからプライム銘柄を抽出"""
     try:
-        df = pd.read_excel(file)
-        # プライム市場のみ抽出
+        # xlrdかopenpyxlで読み込み
+        if file.name.endswith('.xls'):
+            df = pd.read_excel(file, engine='xlrd')
+        else:
+            df = pd.read_excel(file, engine='openpyxl')
+            
         prime_df = df[df['市場・商品区分'] == 'プライム（内国株式）']
         tickers = []
         ticker_info = {}
-        
         for _, row in prime_df.iterrows():
             code = str(row['コード']) + ".T"
             name = row['銘柄名']
             sector = row['33業種区分']
             tickers.append(code)
-            ticker_info[code] = [name, sector] # テーマの代わりに業種を入れる
-            
+            ticker_info[code] = [name, sector]
         return tickers, ticker_info
     except Exception as e:
         st.error(f"ファイル読み込みエラー: {e}")
         return [], {}
 
 st.title("⚡️ プライム全銘柄・完全抽出スキャナー")
-st.caption("🔥🚀📈 の銘柄のみを表示（それ以外は除外）")
+
+# UIの表示をモードによって変える
+if filter_level == "Lv.3 神7 (TOP 7)":
+    st.caption("🏆 今日の主役級「7銘柄」だけを表示します")
+elif filter_level == "Lv.2 精鋭 (🔥🚀のみ)":
+    st.caption("🔥🚀 勢いがある銘柄のみを表示（地味な上げは除外）")
+else:
+    st.caption("📈 全ての上昇銘柄を表示（数が多いので注意）")
 
 def scan():
-    # 1. 対象銘柄の決定
     if uploaded_file is not None:
         tickers, info_db = get_tickers_from_file(uploaded_file)
-        st.success(f"📂 ファイル読み込み完了: プライム {len(tickers)} 銘柄をスキャンします")
+        st.success(f"📂 ファイル読み込み: プライム {len(tickers)} 銘柄")
     else:
         tickers = list(DEFAULT_DB.keys())
         info_db = DEFAULT_DB
-        st.warning("⚠️ ファイル未アップロード: デフォルトの厳選リストのみスキャンします")
+        st.warning("⚠️ デフォルトリストを使用中")
 
-    if st.button('📡 全市場スキャン開始', type="primary"):
+    if st.button('📡 スキャン開始', type="primary"):
         status_area = st.empty()
         bar = st.progress(0)
         
-        # yfinanceは大量の銘柄を一括ダウンロードすると速い
         status_area.text(f"データ取得中... ({len(tickers)}銘柄)")
         
         try:
-            # 5日分取得
-            # ※1000銘柄以上あると時間がかかるため、バッチ処理推奨ですが、
-            # yfinanceは自動でマルチスレッド処理してくれます。
+            # データ取得
             df = yf.download(tickers, period="5d", interval="1d", progress=False, group_by='ticker')
             
             bar.progress(50)
-            status_area.text("分析＆フィルタリング中...")
+            status_area.text("分析中...")
             
             results = []
             valid_tickers = [t for t in tickers if t in df.columns.levels[0]]
             
             for i, ticker in enumerate(valid_tickers):
-                try:
-                    # 進捗バー更新（重いので）
-                    if i % 100 == 0:
-                        bar.progress(50 + int(40 * i / len(valid_tickers)))
+                if i % 100 == 0: bar.progress(50 + int(40 * i / len(valid_tickers)))
 
-                    # 情報取得
+                try:
                     info = info_db.get(ticker, ["不明", "-"])
                     name = info[0]
                     theme = info[1]
@@ -101,7 +104,6 @@ def scan():
                     data = df[ticker].dropna()
                     if len(data) < 2: continue
 
-                    # 最新データ（今日）と前日データ
                     latest = data.iloc[-1]
                     prev = data.iloc[-2]
                     
@@ -111,13 +113,12 @@ def scan():
                     
                     if pd.isna(curr) or pd.isna(op) or prev_close == 0: continue
                     
-                    # 計算
                     open_change = (curr - op) / op * 100
                     day_change = (curr - prev_close) / prev_close * 100
                     
                     # --- 判定ロジック ---
                     status = "-"
-                    priority = 0 # 並び替え用スコア
+                    priority = 0
                     
                     if open_change > 1.0 and day_change > 2.0:
                         status = "🔥🔥 大陽線"
@@ -129,8 +130,11 @@ def scan():
                         status = "📈 堅調"
                         priority = 1
                     
-                    # 【重要】フィルター：地味な銘柄はリストに入れない
-                    if priority == 0:
+                    # 足切りフィルター
+                    if priority == 0: continue
+                    
+                    # Lv.2の時は「堅調」を捨てる
+                    if filter_level == "Lv.2 精鋭 (🔥🚀のみ)" and priority == 1:
                         continue
                         
                     results.append({
@@ -140,8 +144,8 @@ def scan():
                         "前日比": day_change,
                         "現在値": curr,
                         "状態": status,
-                        "業種/テーマ": theme,
-                        "sort_key": priority # 並び替え用
+                        "業種": theme,
+                        "sort_key": open_change # 寄付比（勢い）でソート
                     })
                     
                 except: continue
@@ -150,32 +154,29 @@ def scan():
             status_area.empty()
             
             if results:
-                # 優先度順（🔥 > 🚀 > 📈）かつ 寄付比順 にソート
                 df_res = pd.DataFrame(results)
-                df_res = df_res.sort_values(by=["sort_key", "寄付比"], ascending=[False, False])
+                # 勢い順に並び替え
+                df_res = df_res.sort_values(by="sort_key", ascending=False)
                 
-                st.balloons()
-                st.success(f"検出完了！ 今日の有望株: {len(df_res)}件 / 対象 {len(tickers)}件")
+                # Lv.3なら上位7つに絞る
+                if filter_level == "Lv.3 神7 (TOP 7)":
+                    df_res = df_res.head(7)
+                    st.balloons()
+                    st.success(f"💎 選ばれし {len(df_res)} 銘柄を抽出しました")
+                else:
+                    st.success(f"検出完了: {len(df_res)}件")
                 
-                # 表示用データフレーム
-                show_df = df_res[[
-                    "状態", "コード", "銘柄名", "寄付比", "前日比", "現在値", "業種/テーマ"
-                ]].copy()
-                
+                # 表示の整形
+                show_df = df_res[["状態", "コード", "銘柄名", "寄付比", "前日比", "現在値", "業種"]].copy()
                 show_df['寄付比'] = show_df['寄付比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
                 show_df['前日比'] = show_df['前日比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
                 show_df['現在値'] = show_df['現在値'].map(lambda x: f"{x:,.0f}")
                 
-                st.dataframe(
-                    show_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=800 # 一覧を長く表示
-                )
+                st.dataframe(show_df, use_container_width=True, hide_index=True, height=800)
             else:
-                st.warning("現在、上昇トレンド（📈以上）の銘柄は1つもありません。")
+                st.warning("条件に合う銘柄はありませんでした。")
 
         except Exception as e:
-            st.error(f"エラースキャン中に問題が発生しました: {e}")
+            st.error(f"エラー: {e}")
 
 scan()
