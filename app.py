@@ -25,11 +25,11 @@ filter_level = st.sidebar.radio(
     ("Lv.3 神7 (TOP 7)", "Lv.2 精鋭 (🔥🚀)", "Lv.1 全表示")
 )
 
-# 2. 売買代金フィルター
+# 2. 売買代金フィルター（朝イチ対応版）
 min_trading_value = st.sidebar.slider(
     "💰 最低売買代金 (億円)", 
-    min_value=3, max_value=50, value=15, step=1,
-    help="これ以下の過疎株は足切りします。デイトレなら10億以上推奨。"
+    min_value=1, max_value=50, value=3, step=1,  # ←ここを変更！
+    help="【朝9:30目安】3〜5億円あれば合格 【大引け目安】15億円以上"
 )
 
 # 3. RVOLフィルター（朝イチ対応版）
