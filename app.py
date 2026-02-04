@@ -67,6 +67,7 @@ elif filter_level == "Lv.2 精鋭 (🔥🚀のみ)":
     st.caption("🔥🚀 勢いがある銘柄のみを表示（地味な上げは除外）")
 else:
     st.caption("📈 全ての上昇銘柄を表示（数が多いので注意）")
+# （前略... import等はそのまま）
 
 def scan():
     if uploaded_file is not None:
@@ -77,7 +78,7 @@ def scan():
         info_db = DEFAULT_DB
         st.warning("⚠️ デフォルトリストを使用中")
 
-    if st.button('📡 スキャン開始', type="primary"):
+    if st.button('📡 スキャン開始（出来高フィルター付）', type="primary"):
         status_area = st.empty()
         bar = st.progress(0)
         
@@ -109,10 +110,20 @@ def scan():
                     
                     curr = latest['Close']
                     op = latest['Open']
+                    vol = latest['Volume'] # ★追加：出来高取得
                     prev_close = prev['Close']
                     
                     if pd.isna(curr) or pd.isna(op) or prev_close == 0: continue
                     
+                    # ★追加：売買代金の計算（単位：億円）
+                    # ざっくり 現在値 × 出来高 で計算
+                    trading_value = (curr * vol) / 100000000
+                    
+                    # 【重要フィルター】売買代金が3億円以下の「過疎株」は無視する
+                    # ※朝イチなら1億、昼なら5億など調整しても良いですが、一旦3億で設定
+                    if trading_value < 3.0:
+                        continue
+
                     open_change = (curr - op) / op * 100
                     day_change = (curr - prev_close) / prev_close * 100
                     
@@ -133,7 +144,6 @@ def scan():
                     # 足切りフィルター
                     if priority == 0: continue
                     
-                    # Lv.2の時は「堅調」を捨てる
                     if filter_level == "Lv.2 精鋭 (🔥🚀のみ)" and priority == 1:
                         continue
                         
@@ -143,9 +153,10 @@ def scan():
                         "寄付比": open_change,
                         "前日比": day_change,
                         "現在値": curr,
+                        "売買代金": trading_value, # ★追加：表示用
                         "状態": status,
                         "業種": theme,
-                        "sort_key": open_change # 寄付比（勢い）でソート
+                        "sort_key": open_change
                     })
                     
                 except: continue
@@ -155,22 +166,21 @@ def scan():
             
             if results:
                 df_res = pd.DataFrame(results)
-                # 勢い順に並び替え
                 df_res = df_res.sort_values(by="sort_key", ascending=False)
                 
-                # Lv.3なら上位7つに絞る
                 if filter_level == "Lv.3 神7 (TOP 7)":
                     df_res = df_res.head(7)
                     st.balloons()
-                    st.success(f"💎 選ばれし {len(df_res)} 銘柄を抽出しました")
+                    st.success(f"💎 選ばれし {len(df_res)} 銘柄（売買代金3億以上）")
                 else:
                     st.success(f"検出完了: {len(df_res)}件")
                 
                 # 表示の整形
-                show_df = df_res[["状態", "コード", "銘柄名", "寄付比", "前日比", "現在値", "業種"]].copy()
+                show_df = df_res[["状態", "コード", "銘柄名", "売買代金", "寄付比", "前日比", "現在値", "業種"]].copy()
                 show_df['寄付比'] = show_df['寄付比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
                 show_df['前日比'] = show_df['前日比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
                 show_df['現在値'] = show_df['現在値'].map(lambda x: f"{x:,.0f}")
+                show_df['売買代金'] = show_df['売買代金'].map(lambda x: f"{x:.1f}億円") # ★見やすく表示
                 
                 st.dataframe(show_df, use_container_width=True, hide_index=True, height=800)
             else:
