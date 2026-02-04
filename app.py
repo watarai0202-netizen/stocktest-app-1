@@ -32,11 +32,11 @@ min_trading_value = st.sidebar.slider(
     help="これ以下の過疎株は足切りします。デイトレなら10億以上推奨。"
 )
 
-# 3. RVOLフィルター
+# 3. RVOLフィルター（朝イチ対応版）
 min_rvol = st.sidebar.slider(
     "📢 出来高急増度 (倍)",
-    min_value=0.5, max_value=5.0, value=1.2, step=0.1,
-    help="普段の平均より何倍の出来高があるか。"
+    min_value=0.1, max_value=5.0, value=0.3, step=0.1,  # ←ここを変更！
+    help="【朝9:30目安】0.3倍あれば急増 【大引け目安】1.0倍以上"
 )
 
 # ★ここが進化：ファイル自動探索ロジック
