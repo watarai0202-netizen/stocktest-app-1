@@ -4,3 +4,5 @@ yfinance
 requests
 beautifulsoup4
 numpy
+xlrd
+openpyxl
