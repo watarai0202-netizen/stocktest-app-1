@@ -18,9 +18,9 @@ if not st.session_state.auth:
         st.rerun()
     st.stop()
 
-# --- 3. ファイル読み込み設定（Numbers対策：.xlsxを優先） ---
+# --- 3. ファイル読み込み設定 ---
 local_file = None
-# Numbersで書き出した .xlsx を最初に見に行くように変更
+# どちらの拡張子でも対応
 if os.path.exists("data_j.xlsx"):
     local_file = "data_j.xlsx"
 elif os.path.exists("data_j.xls"):
@@ -32,7 +32,7 @@ filter_level = st.sidebar.radio("🔍 抽出モード", ("Lv.2 精鋭 (🔥🚀)
 min_trading_value = st.sidebar.slider("💰 最低売買代金 (億円)", 1, 50, 5)
 min_rvol = st.sidebar.slider("📢 出来高急増度 (倍)", 0.1, 5.0, 0.5)
 
-# --- 5. 関数定義 ---
+# --- 5. 関数定義（★ETF自動除外機能を追加） ---
 def get_tickers_from_file(file_obj=None, file_path=None):
     try:
         df = None
@@ -47,7 +47,13 @@ def get_tickers_from_file(file_obj=None, file_path=None):
 
         if df is None: return [], {}
             
+        # 1. まずプライム市場で絞る
         prime_df = df[df['市場・商品区分'] == 'プライム（内国株式）']
+        
+        # 2. ★ここでETF/REITを除外する（業種が「－」のものを捨てる）
+        # ETFやREITは「33業種区分」が「－」になっています
+        prime_df = prime_df[prime_df['33業種区分'] != '－']
+        
         tickers = []
         ticker_info = {}
         for _, row in prime_df.iterrows():
@@ -98,7 +104,7 @@ def check_market_condition():
 check_market_condition()
 
 # --- 8. スキャン処理 ---
-uploaded_file = st.sidebar.file_uploader("リスト更新", type=["xls", "xlsx"])
+uploaded_file = st.sidebar.file_uploader("リスト更新（元データのままでOK）", type=["xls", "xlsx"])
 
 tickers = []
 info_db = {}
@@ -165,7 +171,6 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
     if results:
         df_res = pd.DataFrame(results).sort_values("sort", ascending=False)
         
-        # セクター表示機能を削除し、すぐにリスト表示へ
         if filter_level == "Lv.3 神7 (TOP 7)": df_res = df_res.head(7)
         
         show_df = df_res[["状態", "業種", "コード", "銘柄名", "売買代金", "寄付比", "前日比", "現在値"]]
