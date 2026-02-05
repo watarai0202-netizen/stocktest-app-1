@@ -18,7 +18,7 @@ if not st.session_state.auth:
         st.rerun()
     st.stop()
 
-# --- 3. ファイル読み込み設定（JPX標準の.xlsを優先） ---
+# --- 3. ファイル読み込み設定 ---
 local_file = None
 if os.path.exists("data_j.xls"):
     local_file = "data_j.xls"
@@ -28,18 +28,22 @@ elif os.path.exists("data_j.xlsx"):
 # --- 4. サイドバー設定 ---
 st.sidebar.title("⚙️ 設定")
 
-# 市場選択ボタン
+# 市場選択
 target_market = st.sidebar.radio(
     "📊 市場を選択",
     ("プライム", "スタンダード", "グロース"),
     index=0
 )
 
-filter_level = st.sidebar.radio("🔍 抽出モード", ("Lv.2 精鋭 (🔥🚀)", "Lv.3 神7 (TOP 7)"))
+# 抽出モード（プライム用）
+# ※スタンダード・グロースの場合は無視されます（自動でTOP5になります）
+filter_level = st.sidebar.radio("🔍 抽出モード (プライム用)", ("Lv.2 精鋭 (🔥🚀)", "Lv.3 神7 (TOP 7)"))
+
+# フィルター設定
 min_trading_value = st.sidebar.slider("💰 最低売買代金 (億円)", 1, 50, 3)
 min_rvol = st.sidebar.slider("📢 出来高急増度 (倍)", 0.1, 5.0, 0.5)
 
-# --- 5. 関数定義（ETF自動カット＆市場フィルター） ---
+# --- 5. 関数定義 ---
 def get_tickers_from_file(file_obj=None, file_path=None, market_type="プライム"):
     try:
         df = None
@@ -54,17 +58,13 @@ def get_tickers_from_file(file_obj=None, file_path=None, market_type="プライ�
 
         if df is None: return [], {}
             
-        # 市場名でのフィルタリング
         search_key = ""
         if market_type == "プライム": search_key = "プライム（内国株式）"
         elif market_type == "スタンダード": search_key = "スタンダード（内国株式）"
         elif market_type == "グロース": search_key = "グロース（内国株式）"
         
-        # 市場で絞り込み
         target_df = df[df['市場・商品区分'] == search_key]
-        
-        # ★ここでETF/REITを自動削除（業種が「－」のものを除外）
-        target_df = target_df[target_df['33業種区分'] != '－']
+        target_df = target_df[target_df['33業種区分'] != '－'] # ETF除外
         
         tickers = []
         ticker_info = {}
@@ -116,12 +116,10 @@ def check_market_condition():
 check_market_condition()
 
 # --- 8. スキャン処理 ---
-uploaded_file = st.sidebar.file_uploader("リスト更新（data_j.xlsをそのままどうぞ）", type=["xls", "xlsx"])
+uploaded_file = st.sidebar.file_uploader("リスト更新", type=["xls", "xlsx"])
 
 tickers = []
 info_db = {}
-
-# 読み込み
 if uploaded_file: tickers, info_db = get_tickers_from_file(file_obj=uploaded_file, market_type=target_market)
 elif local_file: tickers, info_db = get_tickers_from_file(file_path=local_file, market_type=target_market)
 
@@ -130,7 +128,7 @@ if tickers and st.button(f'📡 {target_market}をスキャン開始', type="pri
     bar = st.progress(0)
     results = []
     
-    # ★スピードアップ：30件ずつ処理（これならギリいけるはず）
+    # バッチサイズ30（速度優先）
     batch_size = 30 
     total = len(tickers)
     
@@ -141,9 +139,7 @@ if tickers and st.button(f'📡 {target_market}をスキャン開始', type="pri
         bar.progress(prog)
         
         try:
-            # サーバー休憩（少し短くして速度優先）
             time.sleep(0.05)
-            
             df = yf.download(batch, period="5d", interval="1d", progress=False, group_by='ticker', threads=False)
             
             valid_tickers = [t for t in batch if t in df.columns.levels[0]]
@@ -186,7 +182,17 @@ if tickers and st.button(f'📡 {target_market}をスキャン開始', type="pri
     if results:
         df_res = pd.DataFrame(results).sort_values("sort", ascending=False)
         
-        if filter_level == "Lv.3 神7 (TOP 7)": df_res = df_res.head(7)
+        # ★ここが変更点：市場によって表示数を制限
+        if target_market in ["スタンダード", "グロース"]:
+            df_res = df_res.head(5)
+            st.markdown(f"### 💎 {target_market}・最強 TOP5")
+        else:
+            # プライムの場合は設定に従う
+            if filter_level == "Lv.3 神7 (TOP 7)": 
+                df_res = df_res.head(7)
+                st.markdown(f"### 💎 プライム・神7 (TOP 7)")
+            else:
+                st.success(f"💎 抽出結果: {len(df_res)}件")
         
         show_df = df_res[["状態", "業種", "コード", "銘柄名", "売買代金", "寄付比", "前日比", "現在値"]]
         show_df['寄付比'] = show_df['寄付比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
