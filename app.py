@@ -116,8 +116,8 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
     bar = st.progress(0)
     results = []
     
-    # サーバー負荷対策：10件ずつ処理
-    batch_size = 10 
+    # サーバー負荷対策：30件ずつ処理
+    batch_size = 30 
     total = len(tickers)
     
     for i in range(0, total, batch_size):
