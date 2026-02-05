@@ -18,13 +18,21 @@ if not st.session_state.auth:
         st.rerun()
     st.stop()
 
-# --- 3. サイドバー設定 ---
+# --- 3. 変数・ファイルの事前定義（★エラー回避の重要ポイント）---
+# ここで最初に定義しておくことで、NameErrorを確実に防ぎます
+local_file = None
+if os.path.exists("data_j.xls"):
+    local_file = "data_j.xls"
+elif os.path.exists("data_j.xlsx"):
+    local_file = "data_j.xlsx"
+
+# --- 4. サイドバー設定 ---
 st.sidebar.title("⚙️ 設定")
 filter_level = st.sidebar.radio("🔍 抽出モード", ("Lv.2 精鋭 (🔥🚀)", "Lv.3 神7 (TOP 7)"))
 min_trading_value = st.sidebar.slider("💰 最低売買代金 (億円)", 1, 50, 5)
 min_rvol = st.sidebar.slider("📢 出来高急増度 (倍)", 0.1, 5.0, 0.5)
 
-# --- 4. 関数: Excel読み込み ---
+# --- 5. 関数定義 ---
 def get_tickers_from_file(file_obj=None, file_path=None):
     try:
         df = None
@@ -50,10 +58,10 @@ def get_tickers_from_file(file_obj=None, file_path=None):
     except Exception:
         return [], {}
 
-# --- 5. メイン画面 ---
+# --- 6. メイン画面 ---
 st.title("⚡️ 最強セクター＆銘柄スキャナー")
 
-# --- 6. 市場天気予報 ---
+# --- 7. 市場天気予報 ---
 def check_market_condition():
     st.markdown("### 🌡 マーケット天気予報 (日経レバ 1570)")
     try:
@@ -89,5 +97,89 @@ def check_market_condition():
 
 check_market_condition()
 
-# --- 7. スキャン処理 ---
-local_file
+# --- 8. スキャン処理（超・安全運転モード バッチ10） ---
+uploaded_file = st.sidebar.file_uploader("リスト更新", type=["xls", "xlsx"])
+
+tickers = []
+info_db = {}
+if uploaded_file: tickers, info_db = get_tickers_from_file(file_obj=uploaded_file)
+elif local_file: tickers, info_db = get_tickers_from_file(file_path=local_file)
+
+if tickers and st.button('📡 スキャン開始', type="primary"):
+    status_area = st.empty()
+    bar = st.progress(0)
+    results = []
+    
+    # サーバー負荷対策：10件ずつ処理
+    batch_size = 10 
+    total = len(tickers)
+    
+    for i in range(0, total, batch_size):
+        batch = tickers[i : i + batch_size]
+        prog = min(i / total, 1.0)
+        status_area.text(f"データ分析中... {i} / {total} 銘柄完了")
+        bar.progress(prog)
+        
+        try:
+            time.sleep(0.1) # サーバー休憩
+            
+            df = yf.download(batch, period="5d", interval="1d", progress=False, group_by='ticker', threads=False)
+            
+            valid_tickers = [t for t in batch if t in df.columns.levels[0]]
+            for t in valid_tickers:
+                try:
+                    data = df[t].dropna()
+                    if len(data) < 2: continue
+                    
+                    latest, prev = data.iloc[-1], data.iloc[-2]
+                    curr, op, vol = latest['Close'], latest['Open'], latest['Volume']
+                    
+                    val = (curr * vol) / 100000000
+                    if val < min_trading_value: continue
+                    
+                    avg_vol = data['Volume'].mean()
+                    if avg_vol == 0: continue
+                    rvol = vol / avg_vol
+                    if rvol < min_rvol: continue
+                    
+                    op_ch = (curr - op)/op*100
+                    day_ch = (curr - prev['Close'])/prev['Close']*100
+                    
+                    status, prio = "-", 0
+                    if op_ch > 1.0 and day_ch > 2.0: status, prio = "🔥🔥 大陽線", 2
+                    elif op_ch > 2.0: status, prio = "🚀 急伸", 1
+                    
+                    if prio > 0:
+                        info = info_db.get(t, ["-", "-"])
+                        results.append({
+                            "コード": t.replace(".T",""), "銘柄名": info[0], "業種": info[1],
+                            "売買代金": val, "寄付比": op_ch, "前日比": day_ch, "現在値": curr,
+                            "状態": status, "sort": val
+                        })
+                except: continue
+        except: continue
+
+    bar.progress(100)
+    status_area.empty()
+    
+    if results:
+        df_res = pd.DataFrame(results).sort_values("sort", ascending=False)
+        
+        st.markdown("### 🏆 最強セクター TOP5")
+        top_sectors = df_res['業種'].value_counts().head(5)
+        cols = st.columns(5)
+        for i, (sec, cnt) in enumerate(top_sectors.items()):
+            cols[i].metric(f"No.{i+1}", f"{sec}", f"{cnt}銘柄")
+        
+        st.divider()
+        if filter_level == "Lv.3 神7 (TOP 7)": df_res = df_res.head(7)
+        
+        show_df = df_res[["状態", "業種", "コード", "銘柄名", "売買代金", "寄付比", "前日比", "現在値"]]
+        show_df['寄付比'] = show_df['寄付比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
+        show_df['前日比'] = show_df['前日比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
+        show_df['現在値'] = show_df['現在値'].map(lambda x: f"{x:,.0f}")
+        show_df['売買代金'] = show_df['売買代金'].map(lambda x: f"{x:.1f}億円")
+        
+        st.dataframe(show_df, use_container_width=True, hide_index=True, height=800)
+    else:
+        st.warning("該当なし")
