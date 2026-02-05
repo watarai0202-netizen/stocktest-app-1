@@ -19,11 +19,12 @@ if not st.session_state.auth:
     st.stop()
 
 # --- 3. 変数・ファイルの事前定義 ---
+# ★ここを修正：Numbersから書き出した .xlsx を優先的に探すように変更
 local_file = None
-if os.path.exists("data_j.xls"):
-    local_file = "data_j.xls"
-elif os.path.exists("data_j.xlsx"):
+if os.path.exists("data_j.xlsx"):
     local_file = "data_j.xlsx"
+elif os.path.exists("data_j.xls"):
+    local_file = "data_j.xls"
 
 # --- 4. サイドバー設定 ---
 st.sidebar.title("⚙️ 設定")
@@ -109,6 +110,7 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
     bar = st.progress(0)
     results = []
     
+    # サーバー負荷対策：10件ずつ処理
     batch_size = 10 
     total = len(tickers)
     
@@ -119,7 +121,7 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
         bar.progress(prog)
         
         try:
-            time.sleep(0.1)
+            time.sleep(0.1) # サーバー休憩
             
             df = yf.download(batch, period="5d", interval="1d", progress=False, group_by='ticker', threads=False)
             
@@ -144,35 +146,4 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
                     day_ch = (curr - prev['Close'])/prev['Close']*100
                     
                     status, prio = "-", 0
-                    if op_ch > 1.0 and day_ch > 2.0: status, prio = "🔥🔥 大陽線", 2
-                    elif op_ch > 2.0: status, prio = "🚀 急伸", 1
-                    
-                    if prio > 0:
-                        info = info_db.get(t, ["-", "-"])
-                        results.append({
-                            "コード": t.replace(".T",""), "銘柄名": info[0], "業種": info[1],
-                            "売買代金": val, "寄付比": op_ch, "前日比": day_ch, "現在値": curr,
-                            "状態": status, "sort": val
-                        })
-                except: continue
-        except: continue
-
-    bar.progress(100)
-    status_area.empty()
-    
-    if results:
-        df_res = pd.DataFrame(results).sort_values("sort", ascending=False)
-        
-        # ★セクター表示部分を削除しました★
-        
-        if filter_level == "Lv.3 神7 (TOP 7)": df_res = df_res.head(7)
-        
-        show_df = df_res[["状態", "業種", "コード", "銘柄名", "売買代金", "寄付比", "前日比", "現在値"]]
-        show_df['寄付比'] = show_df['寄付比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
-        show_df['前日比'] = show_df['前日比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
-        show_df['現在値'] = show_df['現在値'].map(lambda x: f"{x:,.0f}")
-        show_df['売買代金'] = show_df['売買代金'].map(lambda x: f"{x:.1f}億円")
-        
-        st.dataframe(show_df, use_container_width=True, hide_index=True, height=800)
-    else:
-        st.warning("該当なし")
+                    if
