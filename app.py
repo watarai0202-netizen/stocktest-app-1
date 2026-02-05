@@ -5,7 +5,7 @@ import os
 import time
 
 # --- 1. アプリ設定 ---
-st.set_page_config(page_title="最強銘柄スキャナー", layout="wide")
+st.set_page_config(page_title="全市場対応スキャナー", layout="wide")
 MY_PASSWORD = "stock testa"
 
 # --- 2. 認証機能 ---
@@ -18,22 +18,29 @@ if not st.session_state.auth:
         st.rerun()
     st.stop()
 
-# --- 3. ファイル読み込み設定 ---
+# --- 3. ファイル読み込み設定（JPX標準の.xlsを優先） ---
 local_file = None
-# どちらの拡張子でも対応
-if os.path.exists("data_j.xlsx"):
-    local_file = "data_j.xlsx"
-elif os.path.exists("data_j.xls"):
+if os.path.exists("data_j.xls"):
     local_file = "data_j.xls"
+elif os.path.exists("data_j.xlsx"):
+    local_file = "data_j.xlsx"
 
 # --- 4. サイドバー設定 ---
 st.sidebar.title("⚙️ 設定")
+
+# 市場選択ボタン
+target_market = st.sidebar.radio(
+    "📊 市場を選択",
+    ("プライム", "スタンダード", "グロース"),
+    index=0
+)
+
 filter_level = st.sidebar.radio("🔍 抽出モード", ("Lv.2 精鋭 (🔥🚀)", "Lv.3 神7 (TOP 7)"))
-min_trading_value = st.sidebar.slider("💰 最低売買代金 (億円)", 1, 50, 5)
+min_trading_value = st.sidebar.slider("💰 最低売買代金 (億円)", 1, 50, 3)
 min_rvol = st.sidebar.slider("📢 出来高急増度 (倍)", 0.1, 5.0, 0.5)
 
-# --- 5. 関数定義（★ETF自動除外機能を追加） ---
-def get_tickers_from_file(file_obj=None, file_path=None):
+# --- 5. 関数定義（ETF自動カット＆市場フィルター） ---
+def get_tickers_from_file(file_obj=None, file_path=None, market_type="プライム"):
     try:
         df = None
         if file_obj:
@@ -47,16 +54,21 @@ def get_tickers_from_file(file_obj=None, file_path=None):
 
         if df is None: return [], {}
             
-        # 1. まずプライム市場で絞る
-        prime_df = df[df['市場・商品区分'] == 'プライム（内国株式）']
+        # 市場名でのフィルタリング
+        search_key = ""
+        if market_type == "プライム": search_key = "プライム（内国株式）"
+        elif market_type == "スタンダード": search_key = "スタンダード（内国株式）"
+        elif market_type == "グロース": search_key = "グロース（内国株式）"
         
-        # 2. ★ここでETF/REITを除外する（業種が「－」のものを捨てる）
-        # ETFやREITは「33業種区分」が「－」になっています
-        prime_df = prime_df[prime_df['33業種区分'] != '－']
+        # 市場で絞り込み
+        target_df = df[df['市場・商品区分'] == search_key]
+        
+        # ★ここでETF/REITを自動削除（業種が「－」のものを除外）
+        target_df = target_df[target_df['33業種区分'] != '－']
         
         tickers = []
         ticker_info = {}
-        for _, row in prime_df.iterrows():
+        for _, row in target_df.iterrows():
             code = str(row['コード']) + ".T"
             tickers.append(code)
             ticker_info[code] = [row['銘柄名'], row['33業種区分']]
@@ -65,7 +77,7 @@ def get_tickers_from_file(file_obj=None, file_path=None):
         return [], {}
 
 # --- 6. メイン画面 ---
-st.title("⚡️ 最強銘柄スキャナー")
+st.title(f"⚡️ {target_market}・激辛スキャナー")
 
 # --- 7. 市場天気予報 ---
 def check_market_condition():
@@ -104,19 +116,21 @@ def check_market_condition():
 check_market_condition()
 
 # --- 8. スキャン処理 ---
-uploaded_file = st.sidebar.file_uploader("リスト更新（元データのままでOK）", type=["xls", "xlsx"])
+uploaded_file = st.sidebar.file_uploader("リスト更新（data_j.xlsをそのままどうぞ）", type=["xls", "xlsx"])
 
 tickers = []
 info_db = {}
-if uploaded_file: tickers, info_db = get_tickers_from_file(file_obj=uploaded_file)
-elif local_file: tickers, info_db = get_tickers_from_file(file_path=local_file)
 
-if tickers and st.button('📡 スキャン開始', type="primary"):
+# 読み込み
+if uploaded_file: tickers, info_db = get_tickers_from_file(file_obj=uploaded_file, market_type=target_market)
+elif local_file: tickers, info_db = get_tickers_from_file(file_path=local_file, market_type=target_market)
+
+if tickers and st.button(f'📡 {target_market}をスキャン開始', type="primary"):
     status_area = st.empty()
     bar = st.progress(0)
     results = []
     
-    # サーバー負荷対策：30件ずつ処理
+    # ★スピードアップ：30件ずつ処理（これならギリいけるはず）
     batch_size = 30 
     total = len(tickers)
     
@@ -127,7 +141,8 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
         bar.progress(prog)
         
         try:
-            time.sleep(0.1) # サーバー休憩
+            # サーバー休憩（少し短くして速度優先）
+            time.sleep(0.05)
             
             df = yf.download(batch, period="5d", interval="1d", progress=False, group_by='ticker', threads=False)
             
@@ -181,4 +196,4 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
         
         st.dataframe(show_df, use_container_width=True, hide_index=True, height=800)
     else:
-        st.warning("該当なし")
+        st.warning(f"{target_market}市場で条件に合う銘柄はありませんでした。")
