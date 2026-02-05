@@ -5,7 +5,7 @@ import os
 import time
 
 # --- 1. アプリ設定 ---
-st.set_page_config(page_title="最強トレンド発掘機", layout="wide")
+st.set_page_config(page_title="最強銘柄スキャナー", layout="wide")
 MY_PASSWORD = "stock testa"
 
 # --- 2. 認証機能 ---
@@ -18,9 +18,9 @@ if not st.session_state.auth:
         st.rerun()
     st.stop()
 
-# --- 3. 変数・ファイルの事前定義 ---
-# ★ここを修正：Numbersから書き出した .xlsx を優先的に探すように変更
+# --- 3. ファイル読み込み設定（Numbers対策：.xlsxを優先） ---
 local_file = None
+# Numbersで書き出した .xlsx を最初に見に行くように変更
 if os.path.exists("data_j.xlsx"):
     local_file = "data_j.xlsx"
 elif os.path.exists("data_j.xls"):
@@ -59,7 +59,7 @@ def get_tickers_from_file(file_obj=None, file_path=None):
         return [], {}
 
 # --- 6. メイン画面 ---
-st.title("⚡️ 最強セクター＆銘柄スキャナー")
+st.title("⚡️ 最強銘柄スキャナー")
 
 # --- 7. 市場天気予報 ---
 def check_market_condition():
@@ -146,4 +146,34 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
                     day_ch = (curr - prev['Close'])/prev['Close']*100
                     
                     status, prio = "-", 0
-                    if
+                    if op_ch > 1.0 and day_ch > 2.0: status, prio = "🔥🔥 大陽線", 2
+                    elif op_ch > 2.0: status, prio = "🚀 急伸", 1
+                    
+                    if prio > 0:
+                        info = info_db.get(t, ["-", "-"])
+                        results.append({
+                            "コード": t.replace(".T",""), "銘柄名": info[0], "業種": info[1],
+                            "売買代金": val, "寄付比": op_ch, "前日比": day_ch, "現在値": curr,
+                            "状態": status, "sort": val
+                        })
+                except: continue
+        except: continue
+
+    bar.progress(100)
+    status_area.empty()
+    
+    if results:
+        df_res = pd.DataFrame(results).sort_values("sort", ascending=False)
+        
+        # セクター表示機能を削除し、すぐにリスト表示へ
+        if filter_level == "Lv.3 神7 (TOP 7)": df_res = df_res.head(7)
+        
+        show_df = df_res[["状態", "業種", "コード", "銘柄名", "売買代金", "寄付比", "前日比", "現在値"]]
+        show_df['寄付比'] = show_df['寄付比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
+        show_df['前日比'] = show_df['前日比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
+        show_df['現在値'] = show_df['現在値'].map(lambda x: f"{x:,.0f}")
+        show_df['売買代金'] = show_df['売買代金'].map(lambda x: f"{x:.1f}億円")
+        
+        st.dataframe(show_df, use_container_width=True, hide_index=True, height=800)
+    else:
+        st.warning("該当なし")
