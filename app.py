@@ -18,8 +18,7 @@ if not st.session_state.auth:
         st.rerun()
     st.stop()
 
-# --- 3. 変数・ファイルの事前定義（★エラー回避の重要ポイント）---
-# ここで最初に定義しておくことで、NameErrorを確実に防ぎます
+# --- 3. 変数・ファイルの事前定義 ---
 local_file = None
 if os.path.exists("data_j.xls"):
     local_file = "data_j.xls"
@@ -97,7 +96,7 @@ def check_market_condition():
 
 check_market_condition()
 
-# --- 8. スキャン処理（超・安全運転モード バッチ10） ---
+# --- 8. スキャン処理 ---
 uploaded_file = st.sidebar.file_uploader("リスト更新", type=["xls", "xlsx"])
 
 tickers = []
@@ -110,7 +109,6 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
     bar = st.progress(0)
     results = []
     
-    # サーバー負荷対策：10件ずつ処理
     batch_size = 10 
     total = len(tickers)
     
@@ -121,7 +119,7 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
         bar.progress(prog)
         
         try:
-            time.sleep(0.1) # サーバー休憩
+            time.sleep(0.1)
             
             df = yf.download(batch, period="5d", interval="1d", progress=False, group_by='ticker', threads=False)
             
@@ -165,13 +163,8 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
     if results:
         df_res = pd.DataFrame(results).sort_values("sort", ascending=False)
         
-        st.markdown("### 🏆 最強セクター TOP5")
-        top_sectors = df_res['業種'].value_counts().head(5)
-        cols = st.columns(5)
-        for i, (sec, cnt) in enumerate(top_sectors.items()):
-            cols[i].metric(f"No.{i+1}", f"{sec}", f"{cnt}銘柄")
+        # ★セクター表示部分を削除しました★
         
-        st.divider()
         if filter_level == "Lv.3 神7 (TOP 7)": df_res = df_res.head(7)
         
         show_df = df_res[["状態", "業種", "コード", "銘柄名", "売買代金", "寄付比", "前日比", "現在値"]]
