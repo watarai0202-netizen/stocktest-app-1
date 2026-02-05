@@ -5,7 +5,7 @@ import os
 
 # --- 1. アプリ設定 ---
 st.set_page_config(page_title="最強セクター発掘機", layout="wide")
-MY_PASSWORD = "stock testa"  # パスワード
+MY_PASSWORD = "kabu"  # パスワード
 
 # --- 2. 認証機能 ---
 if 'auth' not in st.session_state: st.session_state.auth = False
