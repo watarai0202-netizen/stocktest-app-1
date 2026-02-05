@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import os
+import time
 
 # --- 1. アプリ設定 ---
-st.set_page_config(page_title="最強セクター発掘機", layout="wide")
-MY_PASSWORD = "kabu"  # パスワード
+st.set_page_config(page_title="最強トレンド発掘機", layout="wide")
+MY_PASSWORD = "stock testa"  # パスワード
 
 # --- 2. 認証機能 ---
 if 'auth' not in st.session_state: st.session_state.auth = False
@@ -226,15 +227,8 @@ if tickers and st.button('📡 スキャン開始', type="primary"):
         df_res = pd.DataFrame(results)
         df_res = df_res.sort_values("sort", ascending=False)
         
-        # セクターランキング表示
-        st.markdown("### 🏆 今、資金が入っている「最強業種」TOP5")
-        top_sectors = df_res['業種'].value_counts().head(5)
-        
-        cols = st.columns(5)
-        for i, (sec, cnt) in enumerate(top_sectors.items()):
-            cols[i].metric(f"No.{i+1}", f"{sec}", f"{cnt}銘柄")
-        
-        st.divider()
+        # --- セクターランキング表示（削除）---
+        # （以前あったTOP5業種の集計・表示コードを削除しました）
 
         # リスト表示（神7 or 全表示）
         if filter_level == "Lv.3 神7 (TOP 7)":
