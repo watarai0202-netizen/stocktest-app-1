@@ -477,7 +477,65 @@ if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
     # 候補は多くても数百なので、まとめて取得（必要なら分割）
     status_area.text(f"本命精査データ取得中... 候補 {len(cand_tickers)} 銘柄")
     try:
-        df_long = fetch_prices_long(cand_tickers, period="3mo")
+       strong_results = []
+
+chunk = 30
+total_cand = len(cand_tickers)
+
+st.caption(f"本命候補: {total_cand}（上限 {max_candidates_for_strong}）")
+
+for j in range(0, total_cand, chunk):
+    sub = cand_tickers[j:j+chunk]
+    status_area.text(f"本命 精査中... {j}/{total_cand}（取得 {len(sub)}）")
+
+    try:
+        df_long = fetch_prices_long(sub, period="3mo")
+    except Exception as e:
+        st.warning(f"本命データ取得に失敗: chunk {j}-{j+chunk}（スキップ）")
+        if debug:
+            st.write(e)
+        continue
+
+    if df_long is None or df_long.empty:
+        continue
+
+    if not isinstance(df_long.columns, pd.MultiIndex):
+        df_long = pd.concat({sub[0]: df_long}, axis=1)
+
+    available_long = set(df_long.columns.levels[0].tolist())
+
+    for t in sub:
+        if t not in available_long:
+            continue
+
+        try:
+            data = df_long[t].dropna()
+            ok, d = bc_filters(data)
+            if not ok:
+                continue
+
+            if d["rvol20"] < min_rvol20:
+                continue
+            if d["close_strength"] < min_close_strength_strong:
+                continue
+            if need_trend_or_breakout and not (d["trend_up"] or d["breakout"]):
+                continue
+
+            row_fast = df_fast_cand[df_fast_cand["コード"] == t.replace(".T", "")].iloc[0].to_dict()
+            row_fast["rvol20"] = d["rvol20"]
+            row_fast["高値圏(本命)"] = d["close_strength"]
+            row_fast["トレンド"] = "✅" if d["trend_up"] else "-"
+            row_fast["ブレイク"] = "✅" if d["breakout"] else "-"
+            row_fast["sort_strong"] = float(row_fast["売買代金"]) * float(d["rvol20"])
+            row_fast["状態"] = "📈 本命"
+            strong_results.append(row_fast)
+
+        except:
+            continue
+
+# ★これを必ず出す（ここまで来てるか判定できる）
+st.caption(f"✅ 本命判定完了: {len(strong_results)} 件")
+
     except Exception as e:
         st.error("本命用の株価取得に失敗しました（yfinance側の一時不調の可能性）。")
         if debug:
