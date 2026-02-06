@@ -69,7 +69,6 @@ debug = st.sidebar.checkbox("🧪 デバッグログ表示", value=False)
 # ✅ CSVも受け付ける
 uploaded_file = st.sidebar.file_uploader("リスト更新（CSV推奨）", type=["csv", "xls", "xlsx"])
 
-
 # =========================
 # 5. ユーティリティ
 # =========================
@@ -152,7 +151,7 @@ def get_tickers_from_df(df: pd.DataFrame, market_type="プライム"):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_prices(batch, period="5d"):
-    """yfinance取得をキャッシュして高速化"""
+    """速報用（5d）: 30銘柄バッチで取得してキャッシュ"""
     return yf.download(
         batch,
         period=period,
@@ -165,14 +164,14 @@ def fetch_prices(batch, period="5d"):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_prices_long(batch, period="3mo"):
-    """本命フィルター用（候補だけ長めデータ）"""
+    """本命用（3mo）: 安定性優先で threads=False 推奨"""
     return yf.download(
         batch,
         period=period,
         interval="1d",
         progress=False,
         group_by="ticker",
-        threads=True
+        threads=False
     )
 
 
@@ -342,14 +341,13 @@ if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
 
     # --- 速報（全銘柄を5dで見る） ---
     fast_results = []
-    batch_size = 30  # あなたの運用方針を維持
+    batch_size = 30
     total = len(tickers)
 
     for i in range(0, total, batch_size):
         batch = tickers[i:i + batch_size]
-        prog = min(i / total, 1.0)
+        bar.progress(min(i / max(total, 1), 1.0))
         status_area.text(f"速報スキャン中... {i} / {total} 銘柄完了")
-        bar.progress(prog)
 
         try:
             time.sleep(0.02)
@@ -397,12 +395,11 @@ if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
                     if require_positive_from_open and op_ch <= 0:
                         continue
 
-                    # “高値圏の強さ”（速報は緩めでOK）
+                    # 高値圏の強さ（速報）
                     cs_fast = safe_close_strength(latest)
                     if cs_fast < min_close_strength_fast:
                         continue
 
-                    # 状態ラベル（速報用）
                     status = "🚀 速報"
                     if op_ch > 1.0 and day_ch > 2.0:
                         status = "🔥🔥 速報強"
@@ -433,7 +430,7 @@ if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
                 st.write(f"速報バッチ取得エラー({i}-{i+batch_size}): {e}")
             continue
 
-    bar.progress(100)
+    bar.progress(1.0)
     status_area.empty()
 
     # 表示：速報
@@ -441,14 +438,13 @@ if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
     if fast_results:
         df_fast = pd.DataFrame(fast_results).sort_values("sort", ascending=False)
 
-        # 表示用整形
         show_fast = df_fast[["状態", "コード", "銘柄名", "売買代金", "rvol5", "寄付比", "前日比", "現在値", "高値圏(速報)"]].copy()
-        show_fast["売買代金"] = show_fast["売買代金"].map(lambda x: f"{x:.1f}億円")
-        show_fast["rvol5"] = show_fast["rvol5"].map(lambda x: f"{x:.2f}")
-        show_fast["寄付比"] = show_fast["寄付比"].map(lambda x: f"+{x:.2f}%" if x > 0 else f"{x:.2f}%")
-        show_fast["前日比"] = show_fast["前日比"].map(lambda x: f"+{x:.2f}%" if x > 0 else f"{x:.2f}%")
-        show_fast["現在値"] = show_fast["現在値"].map(lambda x: f"{x:,.0f}")
-        show_fast["高値圏(速報)"] = show_fast["高値圏(速報)"].map(lambda x: f"{x:.2f}")
+        show_fast["売買代金"] = show_fast["売買代金"].map(lambda x: f"{float(x):.1f}億円")
+        show_fast["rvol5"] = show_fast["rvol5"].map(lambda x: f"{float(x):.2f}")
+        show_fast["寄付比"] = show_fast["寄付比"].map(lambda x: f"+{float(x):.2f}%" if float(x) > 0 else f"{float(x):.2f}%")
+        show_fast["前日比"] = show_fast["前日比"].map(lambda x: f"+{float(x):.2f}%" if float(x) > 0 else f"{float(x):.2f}%")
+        show_fast["現在値"] = show_fast["現在値"].map(lambda x: f"{float(x):,.0f}")
+        show_fast["高値圏(速報)"] = show_fast["高値圏(速報)"].map(lambda x: f"{float(x):.2f}")
 
         st.success(f"速報ヒット: {len(df_fast)}件")
         st.dataframe(show_fast, use_container_width=True, hide_index=True, height=520)
@@ -463,10 +459,8 @@ if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
     st.markdown("## 📈 本命（継続・翌日）")
     st.caption("速報候補から、rvol20・トレンド・ブレイク到達・高値圏の強さで“残るやつ”だけを抽出します。")
 
-    # 候補を絞って重さを管理（売買代金上位から）
     df_fast_sorted = pd.DataFrame(fast_results).sort_values("sort", ascending=False)
     df_fast_cand = df_fast_sorted.head(int(max_candidates_for_strong)).copy()
-
     cand_tickers = [f"{c}.T" for c in df_fast_cand["コード"].tolist()]
 
     status_area = st.empty()
@@ -474,130 +468,66 @@ if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
 
     strong_results = []
 
-    # 候補は多くても数百なので、まとめて取得（必要なら分割）
-    status_area.text(f"本命精査データ取得中... 候補 {len(cand_tickers)} 銘柄")
-    try:
-       strong_results = []
-
-chunk = 30
-total_cand = len(cand_tickers)
-
-st.caption(f"本命候補: {total_cand}（上限 {max_candidates_for_strong}）")
-
-for j in range(0, total_cand, chunk):
-    sub = cand_tickers[j:j+chunk]
-    status_area.text(f"本命 精査中... {j}/{total_cand}（取得 {len(sub)}）")
-
-    try:
-        df_long = fetch_prices_long(sub, period="3mo")
-    except Exception as e:
-        st.warning(f"本命データ取得に失敗: chunk {j}-{j+chunk}（スキップ）")
-        if debug:
-            st.write(e)
-        continue
-
-    if df_long is None or df_long.empty:
-        continue
-
-    if not isinstance(df_long.columns, pd.MultiIndex):
-        df_long = pd.concat({sub[0]: df_long}, axis=1)
-
-    available_long = set(df_long.columns.levels[0].tolist())
-
-    for t in sub:
-        if t not in available_long:
-            continue
-
-        try:
-            data = df_long[t].dropna()
-            ok, d = bc_filters(data)
-            if not ok:
-                continue
-
-            if d["rvol20"] < min_rvol20:
-                continue
-            if d["close_strength"] < min_close_strength_strong:
-                continue
-            if need_trend_or_breakout and not (d["trend_up"] or d["breakout"]):
-                continue
-
-            row_fast = df_fast_cand[df_fast_cand["コード"] == t.replace(".T", "")].iloc[0].to_dict()
-            row_fast["rvol20"] = d["rvol20"]
-            row_fast["高値圏(本命)"] = d["close_strength"]
-            row_fast["トレンド"] = "✅" if d["trend_up"] else "-"
-            row_fast["ブレイク"] = "✅" if d["breakout"] else "-"
-            row_fast["sort_strong"] = float(row_fast["売買代金"]) * float(d["rvol20"])
-            row_fast["状態"] = "📈 本命"
-            strong_results.append(row_fast)
-
-        except:
-            continue
-
-# ★これを必ず出す（ここまで来てるか判定できる）
-st.caption(f"✅ 本命判定完了: {len(strong_results)} 件")
-
-    except Exception as e:
-        st.error("本命用の株価取得に失敗しました（yfinance側の一時不調の可能性）。")
-        if debug:
-            st.exception(e)
-        st.stop()
-
-    bar.progress(30)
-    status_area.text("本命判定中...")
-
-    if df_long is None or df_long.empty:
-        st.warning("本命用データが空でした。時間をおいて再実行してください。")
-        st.stop()
-
-    if not isinstance(df_long.columns, pd.MultiIndex):
-        df_long = pd.concat({cand_tickers[0]: df_long}, axis=1)
-
-    available_long = set(df_long.columns.levels[0].tolist())
-
+    chunk = 30
     total_cand = len(cand_tickers)
-    for idx, t in enumerate(cand_tickers):
-        prog = 30 + int(70 * (idx / max(total_cand, 1)))
-        bar.progress(min(prog, 100))
+    st.caption(f"本命候補: {total_cand}（上限 {max_candidates_for_strong}）")
 
-        if t not in available_long:
-            continue
+    for j in range(0, total_cand, chunk):
+        sub = cand_tickers[j:j + chunk]
+        status_area.text(f"本命 精査中... {j}/{total_cand}（取得 {len(sub)}）")
+        bar.progress(min(j / max(total_cand, 1), 1.0))
 
         try:
-            data = df_long[t].dropna()
-            ok, d = bc_filters(data)
-            if not ok:
-                continue
-
-            # 閾値適用
-            if d["rvol20"] < min_rvol20:
-                continue
-            if d["close_strength"] < min_close_strength_strong:
-                continue
-
-            if need_trend_or_breakout and not (d["trend_up"] or d["breakout"]):
-                continue
-
-            # 元の速報行を引き継ぎ
-            row_fast = df_fast_cand[df_fast_cand["コード"] == t.replace(".T", "")].iloc[0].to_dict()
-
-            # 本命評価を付加
-            row_fast["rvol20"] = d["rvol20"]
-            row_fast["高値圏(本命)"] = d["close_strength"]
-            row_fast["トレンド"] = "✅" if d["trend_up"] else "-"
-            row_fast["ブレイク"] = "✅" if d["breakout"] else "-"
-
-            # スコア例：流動性×注目度（並び替え用）
-            row_fast["sort_strong"] = float(row_fast["売買代金"]) * float(d["rvol20"])
-            row_fast["状態"] = "📈 本命"
-            strong_results.append(row_fast)
-
+            df_long = fetch_prices_long(sub, period="3mo")
         except Exception as e:
+            st.warning(f"本命データ取得に失敗: chunk {j}-{j+chunk}（スキップ）")
             if debug:
-                st.write(f"[本命:{t}] エラー: {e}")
+                st.write(e)
             continue
 
-    bar.progress(100)
+        if df_long is None or df_long.empty:
+            continue
+
+        if not isinstance(df_long.columns, pd.MultiIndex):
+            df_long = pd.concat({sub[0]: df_long}, axis=1)
+
+        available_long = set(df_long.columns.levels[0].tolist())
+
+        for t in sub:
+            if t not in available_long:
+                continue
+
+            try:
+                data = df_long[t].dropna()
+                ok, d = bc_filters(data)
+                if not ok:
+                    continue
+
+                if d["rvol20"] < min_rvol20:
+                    continue
+                if d["close_strength"] < min_close_strength_strong:
+                    continue
+                if need_trend_or_breakout and not (d["trend_up"] or d["breakout"]):
+                    continue
+
+                row_fast = df_fast_cand[df_fast_cand["コード"] == t.replace(".T", "")].iloc[0].to_dict()
+                row_fast["rvol20"] = d["rvol20"]
+                row_fast["高値圏(本命)"] = d["close_strength"]
+                row_fast["トレンド"] = "✅" if d["trend_up"] else "-"
+                row_fast["ブレイク"] = "✅" if d["breakout"] else "-"
+                row_fast["sort_strong"] = float(row_fast["売買代金"]) * float(d["rvol20"])
+                row_fast["状態"] = "📈 本命"
+                strong_results.append(row_fast)
+
+            except Exception as e:
+                if debug:
+                    st.write(f"[本命:{t}] エラー: {e}")
+                continue
+
+    bar.progress(1.0)
     status_area.empty()
+
+    st.caption(f"✅ 本命判定完了: {len(strong_results)} 件")
 
     if strong_results:
         df_strong = pd.DataFrame(strong_results).sort_values("sort_strong", ascending=False)
@@ -610,3 +540,13 @@ st.caption(f"✅ 本命判定完了: {len(strong_results)} 件")
         show_strong["売買代金"] = show_strong["売買代金"].map(lambda x: f"{float(x):.1f}億円")
         show_strong["rvol5"] = show_strong["rvol5"].map(lambda x: f"{float(x):.2f}")
         show_strong["rvol20"] = show_strong["rvol20"].map(lambda x: f"{float(x):.2f}")
+        show_strong["寄付比"] = show_strong["寄付比"].map(lambda x: f"+{float(x):.2f}%" if float(x) > 0 else f"{float(x):.2f}%")
+        show_strong["前日比"] = show_strong["前日比"].map(lambda x: f"+{float(x):.2f}%" if float(x) > 0 else f"{float(x):.2f}%")
+        show_strong["現在値"] = show_strong["現在値"].map(lambda x: f"{float(x):,.0f}")
+        show_strong["高値圏(速報)"] = show_strong["高値圏(速報)"].map(lambda x: f"{float(x):.2f}")
+        show_strong["高値圏(本命)"] = show_strong["高値圏(本命)"].map(lambda x: f"{float(x):.2f}")
+
+        st.success(f"本命ヒット: {len(df_strong)}件（候補 {len(df_fast_cand)}件から精査）")
+        st.dataframe(show_strong, use_container_width=True, hide_index=True, height=520)
+    else:
+        st.warning("本命条件に合う銘柄はありませんでした（閾値が厳しい可能性あり）。")
