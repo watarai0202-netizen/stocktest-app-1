@@ -35,9 +35,8 @@ target_market = st.sidebar.radio(
     index=0
 )
 
-# 抽出モード（プライム用）
-# ※スタンダード・グロースの場合は無視されます（自動でTOP5になります）
-filter_level = st.sidebar.radio("🔍 抽出モード (プライム用)", ("Lv.2 精鋭 (🔥🚀)", "Lv.3 神7 (TOP 7)"))
+# 抽出モード（全市場共通に変更）
+filter_level = st.sidebar.radio("🔍 抽出モード", ("Lv.2 精鋭 (🔥🚀)", "Lv.3 神7 (TOP 7)"))
 
 # フィルター設定
 min_trading_value = st.sidebar.slider("💰 最低売買代金 (億円)", 1, 50, 3)
@@ -182,19 +181,15 @@ if tickers and st.button(f'📡 {target_market}をスキャン開始', type="pri
     if results:
         df_res = pd.DataFrame(results).sort_values("sort", ascending=False)
         
-        # ★ここが変更点：市場によって表示数を制限
-        if target_market in ["スタンダード", "グロース"]:
-            df_res = df_res.head(5)
-            st.markdown(f"### 💎 {target_market}・最強 TOP5")
+        # ★どの市場でも「神7」か「全表示」かを選べるように統一
+        if filter_level == "Lv.3 神7 (TOP 7)": 
+            df_res = df_res.head(7)
+            st.markdown(f"### 💎 {target_market}・神7 (TOP 7)")
         else:
-            # プライムの場合は設定に従う
-            if filter_level == "Lv.3 神7 (TOP 7)": 
-                df_res = df_res.head(7)
-                st.markdown(f"### 💎 プライム・神7 (TOP 7)")
-            else:
-                st.success(f"💎 抽出結果: {len(df_res)}件")
+            st.success(f"💎 {target_market} 抽出結果: {len(df_res)}件")
         
-        show_df = df_res[["状態", "業種", "コード", "銘柄名", "売買代金", "寄付比", "前日比", "現在値"]]
+        # ★「業種」を削除しました
+        show_df = df_res[["状態", "コード", "銘柄名", "売買代金", "寄付比", "前日比", "現在値"]]
         show_df['寄付比'] = show_df['寄付比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
         show_df['前日比'] = show_df['前日比'].map(lambda x: f"+{x:.2f}%" if x>0 else f"{x:.2f}%")
         show_df['現在値'] = show_df['現在値'].map(lambda x: f"{x:,.0f}")
