@@ -156,6 +156,7 @@ def fetch_prices(batch, period="5d"):
         group_by="ticker",
         threads=True
     )
+st.sidebar.caption("🕒 株価データは最大5分キャッシュ（同条件の連打は高速）")
 
 
 # =========================
