@@ -4,6 +4,7 @@ import yfinance as yf
 import os
 import time
 from io import BytesIO
+import urllib.request
 
 # =========================
 # 1. アプリ設定
@@ -26,10 +27,15 @@ if not st.session_state.auth:
     st.stop()
 
 # =========================
-# 3. 銘柄マスター（CSV運用）
+# 3. GitHub CSV URL（★ここ重要）
 # =========================
-# ★ここを差し替え！
+# 正しいraw形式（/refs/heads/ は不要）
 GITHUB_CSV_RAW_URL = "https://raw.githubusercontent.com/watarai0202-netizen/stocktest-app-1/main/data_j.csv"
+
+# ローカル保険（任意）
+LOCAL_CSV = None
+if os.path.exists("data_j.csv"):
+    LOCAL_CSV = "data_j.csv"
 
 # =========================
 # 4. サイドバー設定
@@ -42,19 +48,22 @@ target_market = st.sidebar.radio(
     index=0
 )
 
-filter_level = st.sidebar.radio("🔍 抽出モード", ("Lv.2 精鋭 (🔥🚀)", "Lv.3 神7 (TOP 7)"))
+filter_level = st.sidebar.radio(
+    "🔍 抽出モード",
+    ("Lv.2 精鋭 (🔥🚀)", "Lv.3 神7 (TOP 7)")
+)
 
 min_trading_value = st.sidebar.slider("💰 最低売買代金 (億円)", 1, 50, 3)
 min_rvol = st.sidebar.slider("📢 出来高急増度 (倍)", 0.1, 5.0, 0.5)
 
 debug = st.sidebar.checkbox("🧪 デバッグログ表示", value=False)
 
-# CSVアップロードで一時上書き（GitHub更新前のテスト用）
-uploaded_csv = st.sidebar.file_uploader("リスト更新（CSV）", type=["csv"])
+# ✅ 修正①：CSVも受け付ける
+uploaded_file = st.sidebar.file_uploader("リスト更新（CSV推奨）", type=["csv", "xls", "xlsx"])
 
 
 # =========================
-# 5. 関数定義
+# 5. ユーティリティ
 # =========================
 def _market_key(market_type: str) -> str:
     if market_type == "プライム":
@@ -65,45 +74,46 @@ def _market_key(market_type: str) -> str:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_master_csv_from_bytes(file_bytes: bytes) -> pd.DataFrame:
-    """
-    CSVのbytesをDataFrameへ。
-    文字コードは utf-8 / utf-8-sig を想定して吸収。
-    """
+def load_master_from_bytes(file_bytes: bytes, filename: str) -> pd.DataFrame:
+    """CSV/XLSX/XLS を bytes から読み込む（キャッシュあり）"""
+    name = (filename or "").lower()
+
+    if name.endswith(".csv"):
+        bio = BytesIO(file_bytes)
+        try:
+            return pd.read_csv(bio)
+        except UnicodeDecodeError:
+            bio.seek(0)
+            return pd.read_csv(bio, encoding="utf-8-sig")
+
+    # Excel
     bio = BytesIO(file_bytes)
     try:
-        df = pd.read_csv(bio)
-        return df
-    except UnicodeDecodeError:
+        return pd.read_excel(bio, engine="openpyxl")
+    except Exception:
         bio.seek(0)
-        df = pd.read_csv(bio, encoding="utf-8-sig")
-        return df
+        # xlsの場合 xlrd が必要（環境になければ例外）
+        return pd.read_excel(bio, engine="xlrd")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_master_csv_from_path(path: str) -> pd.DataFrame:
-    with open(path, "rb") as f:
-        b = f.read()
-    return load_master_csv_from_bytes(b)
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_master_csv_from_url(url: str) -> pd.DataFrame:
-    # pandasのread_csv(url)でも良いが、bytesに寄せると扱いが安定
-    import urllib.request
+def load_master_from_url(url: str) -> pd.DataFrame:
+    """URLからCSVを取得してDataFrame化（キャッシュあり）"""
     with urllib.request.urlopen(url) as resp:
         b = resp.read()
-    return load_master_csv_from_bytes(b)
+    filename = url.split("?")[0].split("/")[-1]  # data_j.csv 等
+    return load_master_from_bytes(b, filename)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_master_from_path(path: str) -> pd.DataFrame:
+    with open(path, "rb") as f:
+        b = f.read()
+    return load_master_from_bytes(b, os.path.basename(path))
 
 
 def get_tickers_from_df(df: pd.DataFrame, market_type="プライム"):
-    """
-    CSVの列名は以下を要求:
-      - 市場・商品区分
-      - 33業種区分
-      - コード
-      - 銘柄名
-    """
+    """CSV運用想定。必須列チェック＋市場抽出＋ETF除外"""
     if df is None or df.empty:
         return [], {}
 
@@ -111,7 +121,7 @@ def get_tickers_from_df(df: pd.DataFrame, market_type="プライム"):
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         raise ValueError(
-            f"CSVに必要な列がありません: {missing}\n"
+            f"銘柄マスターの列名が違います。不足: {missing}\n"
             f"現在の列: {list(df.columns)}\n"
             f"必要列: {required_cols}"
         )
@@ -123,15 +133,12 @@ def get_tickers_from_df(df: pd.DataFrame, market_type="プライム"):
 
     tickers = []
     ticker_info = {}
-
     for _, row in target_df.iterrows():
-        code_raw = str(row["コード"]).strip()
-
-        # もし "1301.0" みたいに入ってきた場合の保険
-        if code_raw.endswith(".0"):
-            code_raw = code_raw[:-2]
-
-        t = f"{code_raw}.T"
+        code = str(row["コード"]).strip()
+        # "1301.0" 対策
+        if code.endswith(".0"):
+            code = code[:-2]
+        t = f"{code}.T"
         tickers.append(t)
         ticker_info[t] = [str(row["銘柄名"]), str(row["33業種区分"])]
 
@@ -140,9 +147,7 @@ def get_tickers_from_df(df: pd.DataFrame, market_type="プライム"):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_prices(batch, period="5d"):
-    """
-    yfinance取得キャッシュ（同じバッチを連打しても再取得しない）
-    """
+    """yfinance取得をキャッシュして高速化"""
     return yf.download(
         batch,
         period=period,
@@ -160,7 +165,7 @@ st.title(f"⚡️ {target_market}・激辛スキャナー")
 
 
 # =========================
-# 7. 市場天気予報
+# 7. 市場天気予報（1570）
 # =========================
 def check_market_condition():
     st.markdown("### 🌡 マーケット天気予報 (日経レバ 1570)")
@@ -217,54 +222,70 @@ check_market_condition()
 
 # =========================
 # 8. 銘柄マスター読み込み
-#    優先順位: アップロードCSV > GitHub CSV > ローカルCSV
+#    優先順位: アップロード > GitHub CSV > ローカルCSV
 # =========================
 tickers = []
 info_db = {}
 master_source = "未取得"
+df_master = None
 
 try:
-    if uploaded_csv is not None:
-        b = uploaded_csv.read()
-        df_master = load_master_csv_from_bytes(b)
+    if uploaded_file is not None:
+        b = uploaded_file.read()
+        df_master = load_master_from_bytes(b, uploaded_file.name)
         tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
-        master_source = f"アップロード: {uploaded_csv.name}"
-
-    elif GITHUB_CSV_RAW_URL:
-        df_master = load_master_csv_from_url(GITHUB_CSV_RAW_URL)
-        tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
-        master_source = "GitHub(CSV)"
-
-    elif LOCAL_CSV:
-        df_master = load_master_csv_from_path(LOCAL_CSV)
-        tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
-        master_source = f"ローカル: {LOCAL_CSV}"
+        master_source = f"アップロード: {uploaded_file.name}"
 
     else:
-        st.error("銘柄マスターがありません。CSVをアップロードするか、GitHubのraw URLを設定してください。")
+        # ✅ 修正②：GitHub CSVをデフォルト参照
+        if GITHUB_CSV_RAW_URL:
+            df_master = load_master_from_url(GITHUB_CSV_RAW_URL)
+            tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
+            master_source = "GitHub(CSV)"
+
+        elif LOCAL_CSV:
+            df_master = load_master_from_path(LOCAL_CSV)
+            tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
+            master_source = f"ローカル: {LOCAL_CSV}"
+
+        else:
+            st.error("銘柄マスターがありません。CSVをアップロードするか、GitHubのraw URLを設定してください。")
 
 except Exception as e:
-    st.error("銘柄マスター(CSV)の読み込みに失敗しました。CSVの列名や文字コードを確認してください。")
+    st.error("銘柄マスターの読み込みに失敗しました。CSV列名や文字コード、URLを確認してください。")
     if debug:
         st.exception(e)
 
+# ✅ 修正③：状況がすぐ分かる表示（0件原因の切り分け）
 st.sidebar.caption(f"📌 マスター参照元: {master_source}")
 st.sidebar.caption(f"📌 対象銘柄数(市場抽出後): {len(tickers)}")
+
+if df_master is not None and len(tickers) == 0:
+    st.error("銘柄リストが0件です。CSVの市場表記やETF除外条件の結果、対象が無い可能性があります。")
+    st.caption("確認ポイント：")
+    st.caption("1) CSVの「市場・商品区分」が 'プライム（内国株式）' 等と完全一致しているか")
+    st.caption("2) '33業種区分' が '－' ばかりになっていないか（ETF除外で消える）")
+    if debug:
+        st.write("市場・商品区分のユニーク値（上位）：")
+        st.write(df_master["市場・商品区分"].value_counts().head(10))
+        st.write("33業種区分のユニーク値（上位）：")
+        st.write(df_master["33業種区分"].value_counts().head(10))
+
+if not tickers:
+    st.stop()
 
 
 # =========================
 # 9. スキャン処理
 # =========================
-if tickers and st.button(f"📡 {target_market}をスキャン開始", type="primary"):
+if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
     status_area = st.empty()
     bar = st.progress(0)
     results = []
 
+    # まずはあなたの運用方針（30銘柄ずつ）を維持
+    batch_size = 30
     total = len(tickers)
-
-    # バッチ回数を減らした方が速いことが多いので60を基本に
-    batch_size = 60 if total >= 60 else total
-    period = "5d"
 
     for i in range(0, total, batch_size):
         batch = tickers[i:i + batch_size]
@@ -274,13 +295,12 @@ if tickers and st.button(f"📡 {target_market}をスキャン開始", type="pri
 
         try:
             time.sleep(0.02)
-            df = fetch_prices(batch, period=period)
+            df = fetch_prices(batch, period="5d")
             if df is None or df.empty:
                 continue
 
-            # MultiIndex想定（ticker→OHLCV）
+            # MultiIndex（ticker->OHLCV）前提。単一返却の保険も入れる
             if not isinstance(df.columns, pd.MultiIndex):
-                # 単一Ticker返却の保険
                 df = pd.concat({batch[0]: df}, axis=1)
 
             available = set(df.columns.levels[0].tolist())
@@ -333,7 +353,6 @@ if tickers and st.button(f"📡 {target_market}をスキャン開始", type="pri
                             "状態": status,
                             "sort": val
                         })
-
                 except Exception as e:
                     if debug:
                         st.write(f"[{t}] データ処理エラー: {e}")
