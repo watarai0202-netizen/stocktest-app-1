@@ -39,6 +39,18 @@ LOCAL_CSV = "data_j.csv" if os.path.exists("data_j.csv") else None
 # =========================
 st.sidebar.title("⚙️ 設定")
 
+# ✅ キャッシュクリア（ここを押す）
+if st.sidebar.button("🔄 キャッシュクリア"):
+    st.cache_data.clear()
+    st.rerun()
+
+target_market = st.sidebar.radio(
+    "📊 市場を選択",
+    ("プライム", "スタンダード", "グロース"),
+    index=0
+)
+
+
 target_market = st.sidebar.radio(
     "📊 市場を選択",
     ("プライム", "スタンダード", "グロース"),
@@ -68,6 +80,8 @@ debug = st.sidebar.checkbox("🧪 デバッグログ表示", value=False)
 
 # ✅ CSVも受け付ける
 uploaded_file = st.sidebar.file_uploader("リスト更新（CSV推奨）", type=["csv", "xls", "xlsx"])
+
+
 
 # =========================
 # 5. ユーティリティ
