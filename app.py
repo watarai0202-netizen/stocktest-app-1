@@ -44,11 +44,6 @@ if st.sidebar.button("🔄 キャッシュクリア"):
     st.cache_data.clear()
     st.rerun()
 
-target_market = st.sidebar.radio(
-    "📊 市場を選択",
-    ("プライム", "スタンダード", "グロース"),
-    index=0
-)
 
 
 target_market = st.sidebar.radio(
