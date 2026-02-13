@@ -6,11 +6,6 @@ import time
 from io import BytesIO
 import urllib.request
 
-# --- 追加（プライム売買代金 天気用） ---
-import re
-from datetime import datetime, timedelta
-from pypdf import PdfReader
-
 # =========================
 # 1. アプリ設定
 # =========================
@@ -186,6 +181,19 @@ def fetch_prices_long(batch, period="3mo"):
     )
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_1570_prices(period="3mo"):
+    """1570の売買代金温度（平均比）用"""
+    return yf.download(
+        ["1570.T"],
+        period=period,
+        interval="1d",
+        progress=False,
+        group_by="ticker",
+        threads=False
+    )
+
+
 def safe_close_strength(row) -> float:
     """(Close-Low)/(High-Low) 0〜1。High==Low対策あり"""
     h = float(row["High"])
@@ -193,6 +201,33 @@ def safe_close_strength(row) -> float:
     c = float(row["Close"])
     rng = max(h - l, 1e-9)
     return (c - l) / rng
+
+
+def _calc_trading_value_oku(close: float, volume: float) -> float:
+    """売買代金（近似）を億円で"""
+    return (float(close) * float(volume)) / 1e8
+
+
+def _fmt_oku_yen(v_oku: float) -> str:
+    return f"{v_oku:,.0f} 億円"
+
+
+def _weather_1570(tv_ratio: float, day_ch: float) -> str:
+    """
+    1570売買代金（近似）の平均比と価格方向で「温度感」ラベルを作る。
+    tv_ratio: 今日の売買代金 / 直近20日平均
+    day_ch: 価格 前日比(%)
+    """
+    # 目安：まずは素直な閾値。後で運用で調整しやすい形。
+    if tv_ratio >= 1.40 and day_ch >= 1.0:
+        return "☀️ 快晴 (🔥 資金流入 × 上昇)"
+    if tv_ratio >= 1.25 and day_ch > 0:
+        return "🌤 晴れ (🚀 資金流入)"
+    if tv_ratio >= 1.25 and day_ch <= 0:
+        return "☔️ 土砂降り (⚠️ 売買増 × 下落＝ヘッジ/投げ)"
+    if tv_ratio <= 0.80:
+        return "☁️ 雨 (冷え)"
+    return "☁️ 曇り"
 
 
 def bc_filters(data: pd.DataFrame):
@@ -220,7 +255,9 @@ def bc_filters(data: pd.DataFrame):
     # trend (5MA/25MA)
     ma5 = data["Close"].rolling(5).mean().iloc[-1]
     ma25 = data["Close"].rolling(25).mean().iloc[-1]
-    trend_up = (not pd.isna(ma5)) and (not pd.isna(ma25)) and (float(ma5) > float(ma25)) and (float(latest["Close"]) > float(ma25))
+    trend_up = (not pd.isna(ma5)) and (not pd.isna(ma25)) and (float(ma5) > float(ma25)) and (
+        float(latest["Close"]) > float(ma25)
+    )
 
     # breakout reach（直近20日高値）
     prev_20_high = data["High"].rolling(20).max().shift(1).iloc[-1]
@@ -242,165 +279,35 @@ def bc_filters(data: pd.DataFrame):
 # =========================
 st.title(f"⚡️ {target_market}・激辛スキャナー")
 
-
 # =========================
-# 7. 市場天気予報（1570 + プライム売買代金）
+# 7. 市場天気予報（1570：価格＋売買代金温度）
 # =========================
-
-# --- JPX 商況プリント（売買代金） ---
-JPX_PDF_BASE = "https://www.jpx.co.jp/markets/equities/volume-and-value/tvdivq000000derc-att"
-
-def _head_ok(url: str) -> bool:
-    try:
-        req = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return int(getattr(resp, "status", 200)) == 200
-    except Exception:
-        return False
-
-def _find_latest_pdf(kind: str, lookback_days: int = 10, skip_dates: set[str] | None = None) -> tuple[str, str]:
-    """
-    kind: "1"=前場, "2"=後場
-    return: (url, yyyymmdd)
-    """
-    skip_dates = skip_dates or set()
-    jst_today = datetime.utcnow() + timedelta(hours=9)
-
-    for i in range(0, lookback_days):
-        d = (jst_today - timedelta(days=i)).strftime("%Y%m%d")
-        if d in skip_dates:
-            continue
-        url = f"{JPX_PDF_BASE}/{kind}_{d}.pdf"
-        if _head_ok(url):
-            return url, d
-
-    raise RuntimeError("JPX商況プリントPDFが見つかりませんでした")
-
-def _extract_prime_turnover_yen_from_pdf(pdf_bytes: bytes) -> int:
-    # PDFテキスト抽出 → 「内国株式・プライム市場 5,618,127 百万円」みたいな行から抜く
-    reader = PdfReader(BytesIO(pdf_bytes))
-    text = "\n".join((p.extract_text() or "") for p in reader.pages)
-
-    # 表記揺れに少し強くする（・や空白を許容）
-    m = re.search(r"内国株式[・\s]*プライム市場\s+([\d,]+)\s+百万円", text)
-    if not m:
-        raise RuntimeError("PDFからプライム市場の売買代金（百万円）が見つかりませんでした")
-
-    million_yen = int(m.group(1).replace(",", ""))
-    return million_yen * 1_000_000  # 円に変換
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_jpx_prime_turnover(kind: str) -> dict:
-    """
-    kind: "1"(前場) or "2"(後場)
-    return:
-      {
-        "date": "yyyymmdd",
-        "yen": int,
-        "prev_date": "yyyymmdd",
-        "prev_yen": int,
-        "diff_yen": int,
-        "pct": float
-      }
-    """
-    url, d = _find_latest_pdf(kind, lookback_days=14)
-    pdf = urllib.request.urlopen(url, timeout=20).read()
-    yen = _extract_prime_turnover_yen_from_pdf(pdf)
-
-    # 前営業日っぽいPDF（＝直近で別日付の存在するPDF）を探す
-    url2, d2 = _find_latest_pdf(kind, lookback_days=60, skip_dates={d})
-    pdf2 = urllib.request.urlopen(url2, timeout=20).read()
-    prev_yen = _extract_prime_turnover_yen_from_pdf(pdf2)
-
-    diff = yen - prev_yen
-    pct = (diff / prev_yen * 100) if prev_yen else 0.0
-
-    return {
-        "date": d,
-        "yen": yen,
-        "prev_date": d2,
-        "prev_yen": prev_yen,
-        "diff_yen": diff,
-        "pct": pct,
-    }
-
-@st.cache_data(ttl=3600, show_spinner=False)  # 1時間キャッシュ（前場中はこれで十分）
-def fetch_jpx_prime_turnover_series(kind: str, n_points: int = 20) -> pd.DataFrame:
-    """
-    JPX商況プリントPDFから、直近n_points回分のプライム売買代金を時系列で取る
-    kind: "1"(前場) or "2"(後場)
-    return columns: ["date","yen"]
-    """
-    rows = []
-    skip = set()
-    # 休日などを踏むので多めに探索
-    for _ in range(n_points):
-        url, d = _find_latest_pdf(kind, lookback_days=140, skip_dates=skip)
-        pdf = urllib.request.urlopen(url, timeout=20).read()
-        yen = _extract_prime_turnover_yen_from_pdf(pdf)
-        rows.append({"date": d, "yen": yen})
-        skip.add(d)
-
-    df = pd.DataFrame(rows)
-    df = df.sort_values("date").reset_index(drop=True)  # 日付昇順
-    return df
-
-def prime_turnover_weather(today_yen: int, avg_yen: float, pct: float) -> str:
-    """
-    売買代金の「平均比」と「前日比」を見て、1570と同じ感じのラベルを作る
-    """
-    if avg_yen <= 0:
-        return "☁️ 曇り"
-
-    r = today_yen / avg_yen  # 平均比
-
-    # しきい値（必要なら調整）
-    if r >= 1.30 and pct >= 10:
-        return "☀️ 快晴 (🔥 資金流入 強)"
-    if r >= 1.15 and pct >= 5:
-        return "🌤 晴れ (🚀 活況)"
-    if r <= 0.75 and pct <= -10:
-        return "☔️ 土砂降り (📉 資金減速)"
-    if r <= 0.90 and pct <= -5:
-        return "☁️ 雨 (弱い)"
-    return "☁️ 曇り"
-
-def _fmt_oku(yen: int) -> str:
-    return f"{yen/1e8:,.0f} 億円"
-
-
 def check_market_condition():
-    st.markdown("### 🌡 マーケット天気予報 (日経レバ 1570 / プライム売買代金)")
+    st.markdown("### 🌡 マーケット天気予報 (日経レバ 1570)")
     try:
-        # -------------------------
-        # 1570（従来）
-        # -------------------------
         df_m = fetch_prices(["1570.T"], period="5d")
         if df_m is None or df_m.empty:
             return
 
         if isinstance(df_m.columns, pd.MultiIndex):
             s = df_m["1570.T"].dropna()
-            if len(s) < 2:
-                return
-            latest = s.iloc[-1]
-            prev = s.iloc[-2]
-            curr = float(latest["Close"])
-            op = float(latest["Open"])
-            prev_cl = float(prev["Close"])
         else:
             s = df_m.dropna()
-            if len(s) < 2:
-                return
-            latest = s.iloc[-1]
-            prev = s.iloc[-2]
-            curr = float(latest["Close"])
-            op = float(latest["Open"])
-            prev_cl = float(prev["Close"])
+
+        if len(s) < 2:
+            return
+
+        latest = s.iloc[-1]
+        prev = s.iloc[-2]
+
+        curr = float(latest["Close"])
+        op = float(latest["Open"])
+        prev_cl = float(prev["Close"])
 
         op_ch = (curr - op) / op * 100
         day_ch = (curr - prev_cl) / prev_cl * 100
 
+        # --- 価格ベースの従来ラベル ---
         status = "☁️ 曇り"
         if op_ch > 0.5 and day_ch > 1.0:
             status = "☀️ 快晴 (🔥 トレンド上昇中)"
@@ -412,45 +319,45 @@ def check_market_condition():
             status = "☁️ 雨 (弱い)"
 
         st.info(f"1570ステータス: **{status}**")
+
         c1, c2, c3 = st.columns(3)
         c1.metric("現在値", f"{curr:,.0f}円")
         c2.metric("寄付比", f"{op_ch:+.2f}%")
         c3.metric("前日比", f"{day_ch:+.2f}%")
 
-        # -------------------------
-        # プライム売買代金（前場・後場）＋ 前場の天気
-        # -------------------------
-        st.markdown("#### 🏦 プライム市場 売買代金（公式・商況プリント）")
+        # --- 追加：売買代金（近似）で温度感 ---
+        df_tv = fetch_1570_prices(period="3mo")
+        if isinstance(df_tv.columns, pd.MultiIndex):
+            tv = df_tv["1570.T"].dropna()
+        else:
+            tv = df_tv.dropna()
 
-        zenba = fetch_jpx_prime_turnover("1")  # 前場
-        goba = fetch_jpx_prime_turnover("2")   # 後場（引け後）
+        if len(tv) >= 6:
+            tv_latest = tv.iloc[-1]
+            tv_prev = tv.iloc[-2]
 
-        # 前場の「過去平均」を取って天気判定
-        s_zenba = fetch_jpx_prime_turnover_series("1", n_points=20)
-        avg_zenba = float(s_zenba["yen"].mean()) if (s_zenba is not None and len(s_zenba) >= 5) else 0.0
-        zenba_ratio = (zenba["yen"] / avg_zenba) if avg_zenba else 0.0
-        zenba_weather = prime_turnover_weather(zenba["yen"], avg_zenba, zenba["pct"])
+            tv_today = _calc_trading_value_oku(tv_latest["Close"], tv_latest["Volume"])
+            tv_yday = _calc_trading_value_oku(tv_prev["Close"], tv_prev["Volume"])
+            tv_ch_pct = (tv_today - tv_yday) / tv_yday * 100 if tv_yday > 0 else 0.0
 
-        st.info(f"前場の資金温度: **{zenba_weather}**")
+            # 直近20日平均（※今日を除いて平均を取りたいので、最後の1本を除外）
+            tail = tv.tail(21).copy()
+            tail["TV"] = (tail["Close"] * tail["Volume"]) / 1e8
+            if len(tail) >= 6:
+                tv_avg20 = float(tail["TV"].iloc[:-1].mean()) if len(tail) >= 7 else float(tail["TV"].mean())
+            else:
+                tv_avg20 = 0.0
 
-        d1, d2, d3 = st.columns(3)
-        d1.metric(
-            f"前場売買代金（{zenba['date']}）",
-            _fmt_oku(zenba["yen"]),
-            f"{_fmt_oku(zenba['diff_yen'])}（{zenba['pct']:+.2f}%）"
-        )
-        d2.metric(
-            "前場：平均比（直近20回）",
-            f"{zenba_ratio:.2f}x",
-            f"平均 {_fmt_oku(int(avg_zenba))}" if avg_zenba else "平均取得不可"
-        )
-        d3.metric(
-            f"後場売買代金（{goba['date']}）",
-            _fmt_oku(goba["yen"]),
-            f"{_fmt_oku(goba['diff_yen'])}（{goba['pct']:+.2f}%）"
-        )
+            tv_ratio = (tv_today / tv_avg20) if tv_avg20 > 0 else 0.0
+            tv_weather = _weather_1570(tv_ratio, day_ch)
 
-        st.caption("※ 前場は12:00頃、後場は16:10頃にJPX掲載予定の商況プリントから取得")
+            st.markdown("#### 💹 1570 売買代金温度（近似）")
+            st.info(f"資金温度: **{tv_weather}**")
+
+            t1, t2, t3 = st.columns(3)
+            t1.metric("売買代金（今日）", _fmt_oku_yen(tv_today), f"{tv_ch_pct:+.1f}%（前日比）")
+            t2.metric("平均比（直近20日）", f"{tv_ratio:.2f}x", f"平均 {_fmt_oku_yen(tv_avg20)}" if tv_avg20 > 0 else "平均取得不可")
+            t3.metric("解釈メモ", "上昇×売買代金↑", "リスクオン寄り")
 
         st.divider()
 
@@ -459,7 +366,6 @@ def check_market_condition():
             st.warning(f"天気予報取得エラー: {e}")
 
 check_market_condition()
-
 
 # =========================
 # 8. 銘柄マスター読み込み
