@@ -381,6 +381,7 @@ def check_market_condition():
         else:
             st.warning("天気予報の取得に失敗しました。")
 
+check_market_condition()
 
 
 # =========================
