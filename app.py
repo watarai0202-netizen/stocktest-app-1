@@ -252,6 +252,30 @@ def check_market_condition():
     try:
         # --- 価格（寄付比・前日比） ---
         df_m = fetch_prices(["1570.T"], period="5d")
+        # =========================
+# 1570 売買代金温度用ユーティリティ
+# =========================
+def _fmt_oku_yen(x: float) -> str:
+    """億円表記"""
+    return f"{float(x):,.0f}億円"
+
+def _calc_trading_value_oku(high: float, low: float, close: float, volume: float) -> float:
+    """売買代金（近似）を億円で（Typical Price × Volume）"""
+    tp = (float(high) + float(low) + float(close)) / 3.0
+    return (tp * float(volume)) / 1e8
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_1570_prices(period="3mo"):
+    """1570専用：日足データ取得（売買代金温度用）"""
+    return yf.download(
+        ["1570.T"],
+        period=period,
+        interval="1d",
+        progress=False,
+        group_by="ticker",
+        threads=False
+    )
+
         if df_m is None or df_m.empty:
             st.warning("1570データが取得できませんでした。")
             return
