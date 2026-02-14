@@ -397,7 +397,7 @@ def check_market_condition():
             t1, t2, t3 = st.columns(3)
             t1.metric("売買代金（今日）", _fmt_oku_yen(tv_today), f"{tv_ch_pct:+.1f}%（前日比）")
             t2.metric("平均比（直近20日）", f"{tv_ratio:.2f}x", f"平均 {_fmt_oku_yen(tv_avg20)}")
-            t3.metric("読み方", f"{direction} × {heat}", "方向=前日比 / 熱量=平均比")
+            t3.metric("読み方", f"{updown} × {heat}", "方向=前日比 / 熱量=平均比")
 
         st.divider()
 
