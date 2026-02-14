@@ -6,11 +6,6 @@ import time
 from io import BytesIO
 import urllib.request
 
-# --- 追加（プライム売買代金 天気用） ---
-import re
-from datetime import datetime, timedelta
-from pypdf import PdfReader
-
 # =========================
 # 1. アプリ設定
 # =========================
@@ -79,7 +74,6 @@ debug = st.sidebar.checkbox("🧪 デバッグログ表示", value=False)
 # ✅ CSVも受け付ける
 uploaded_file = st.sidebar.file_uploader("リスト更新（CSV推奨）", type=["csv", "xls", "xlsx"])
 
-
 # =========================
 # 5. ユーティリティ
 # =========================
@@ -89,6 +83,17 @@ def _market_key(market_type: str) -> str:
     if market_type == "スタンダード":
         return "スタンダード（内国株式）"
     return "グロース（内国株式）"
+
+
+def _fmt_oku_yen(x: float) -> str:
+    """億円表記"""
+    return f"{float(x):,.0f}億円"
+
+
+def _calc_trading_value_oku(high: float, low: float, close: float, volume: float) -> float:
+    """売買代金（近似）を億円で（Typical Price × Volume）"""
+    tp = (float(high) + float(low) + float(close)) / 3.0
+    return (tp * float(volume)) / 1e8
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -186,6 +191,19 @@ def fetch_prices_long(batch, period="3mo"):
     )
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_1570_prices(period="3mo"):
+    """1570専用：売買代金温度用（Typical Price × Volume）"""
+    return yf.download(
+        ["1570.T"],
+        period=period,
+        interval="1d",
+        progress=False,
+        group_by="ticker",
+        threads=False
+    )
+
+
 def safe_close_strength(row) -> float:
     """(Close-Low)/(High-Low) 0〜1。High==Low対策あり"""
     h = float(row["High"])
@@ -220,7 +238,11 @@ def bc_filters(data: pd.DataFrame):
     # trend (5MA/25MA)
     ma5 = data["Close"].rolling(5).mean().iloc[-1]
     ma25 = data["Close"].rolling(25).mean().iloc[-1]
-    trend_up = (not pd.isna(ma5)) and (not pd.isna(ma25)) and (float(ma5) > float(ma25)) and (float(latest["Close"]) > float(ma25))
+    trend_up = (
+        (not pd.isna(ma5)) and (not pd.isna(ma25))
+        and (float(ma5) > float(ma25))
+        and (float(latest["Close"]) > float(ma25))
+    )
 
     # breakout reach（直近20日高値）
     prev_20_high = data["High"].rolling(20).max().shift(1).iloc[-1]
@@ -242,7 +264,6 @@ def bc_filters(data: pd.DataFrame):
 # =========================
 st.title(f"⚡️ {target_market}・激辛スキャナー")
 
-
 # =========================
 # 7. 市場天気予報（1570：価格＋売買代金温度）
 # =========================
@@ -252,30 +273,6 @@ def check_market_condition():
     try:
         # --- 価格（寄付比・前日比） ---
         df_m = fetch_prices(["1570.T"], period="5d")
-        # =========================
-# 1570 売買代金温度用ユーティリティ
-# =========================
-def _fmt_oku_yen(x: float) -> str:
-    """億円表記"""
-    return f"{float(x):,.0f}億円"
-
-def _calc_trading_value_oku(high: float, low: float, close: float, volume: float) -> float:
-    """売買代金（近似）を億円で（Typical Price × Volume）"""
-    tp = (float(high) + float(low) + float(close)) / 3.0
-    return (tp * float(volume)) / 1e8
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_1570_prices(period="3mo"):
-    """1570専用：日足データ取得（売買代金温度用）"""
-    return yf.download(
-        ["1570.T"],
-        period=period,
-        interval="1d",
-        progress=False,
-        group_by="ticker",
-        threads=False
-    )
-
         if df_m is None or df_m.empty:
             st.warning("1570データが取得できませんでした。")
             return
@@ -313,7 +310,8 @@ def fetch_1570_prices(period="3mo"):
                 else:
                     tv = df_tv.dropna()
 
-                if len(tv) >= 6:
+                # 最低2日あれば前日比は算出できる
+                if len(tv) >= 2:
                     tv_latest = tv.iloc[-1]
                     tv_prev = tv.iloc[-2]
 
@@ -330,12 +328,13 @@ def fetch_1570_prices(period="3mo"):
                     tail = tv.tail(21).copy()
                     tail["TV"] = (((tail["High"] + tail["Low"] + tail["Close"]) / 3.0) * tail["Volume"]) / 1e8
 
-                    if len(tail) >= 7:
+                    if len(tail) >= 3:
                         tv_avg20 = float(tail["TV"].iloc[:-1].mean())
                     else:
                         tv_avg20 = float(tail["TV"].mean())
 
                     tv_ratio = (tv_today / tv_avg20) if (tv_avg20 and tv_avg20 > 0) else None
+
         except Exception as e:
             if debug:
                 st.warning(f"売買代金温度の取得に失敗: {e}")
@@ -391,6 +390,8 @@ def fetch_1570_prices(period="3mo"):
 
         if tv_ratio is None or tv_today is None or tv_avg20 is None or tv_ch_pct is None:
             st.warning("売買代金温度を算出できませんでした（データ不足/取得失敗）。")
+            if debug:
+                st.write("tv_ratio:", tv_ratio, "tv_today:", tv_today, "tv_avg20:", tv_avg20, "tv_ch_pct:", tv_ch_pct)
         else:
             t1, t2, t3 = st.columns(3)
             t1.metric("売買代金（今日）", _fmt_oku_yen(tv_today), f"{tv_ch_pct:+.1f}%（前日比）")
@@ -405,8 +406,9 @@ def fetch_1570_prices(period="3mo"):
         else:
             st.warning("天気予報の取得に失敗しました。")
 
-check_market_condition()
 
+# ✅ ここが超重要：表示するために呼び出す
+check_market_condition()
 
 # =========================
 # 8. 銘柄マスター読み込み
@@ -496,7 +498,7 @@ if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
                     op = float(latest["Open"])
                     vol = float(latest["Volume"])
 
-                    # 流動性（億円）
+                    # 流動性（億円） ※速報テーブルの売買代金は従来通り Close×Volume でOK
                     val = (curr * vol) / 100000000
                     if val < min_trading_value:
                         continue
