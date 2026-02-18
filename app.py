@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -28,11 +27,9 @@ if not st.session_state.auth:
     st.stop()
 
 # =========================
-# 3. GitHub CSV URL（★ここ重要）
+# 3. GitHub CSV URL
 # =========================
 GITHUB_CSV_RAW_URL = "https://raw.githubusercontent.com/watarai0202-netizen/stocktest-app-1/main/data_j.csv"
-
-# ローカル保険（任意）
 LOCAL_CSV = "data_j.csv" if os.path.exists("data_j.csv") else None
 
 # =========================
@@ -40,7 +37,6 @@ LOCAL_CSV = "data_j.csv" if os.path.exists("data_j.csv") else None
 # =========================
 st.sidebar.title("⚙️ 設定")
 
-# ✅ キャッシュクリア（ここを押す）
 if st.sidebar.button("🔄 キャッシュクリア"):
     st.cache_data.clear()
     st.rerun()
@@ -56,622 +52,260 @@ st.sidebar.subheader("🚀 速報（10:00向け）")
 min_trading_value = st.sidebar.slider("💰 最低売買代金 (億円)", 1, 50, 3)
 min_rvol5 = st.sidebar.slider("📢 出来高急増度 rvol(5日) (倍)", 0.1, 5.0, 0.5)
 require_positive_from_open = st.sidebar.checkbox("✅ 現在値が寄付より上（寄り天抑制）", value=True)
-min_close_strength_fast = st.sidebar.slider("🔧 高値圏の強さ(速報) 0-1", 0.0, 1.0, 0.60)
 
 # 本命（継続・翌日）向けフィルター
 st.sidebar.subheader("📈 本命（継続・翌日）")
 enable_strong_scan = st.sidebar.checkbox("本命フィルターも実行する", value=True)
-max_candidates_for_strong = st.sidebar.slider("本命精査する候補上限（多いと重い）", 30, 300, 120, step=10)
+max_candidates_for_strong = st.sidebar.slider("本命精査する候補上限", 30, 300, 120, step=10)
 min_rvol20 = st.sidebar.slider("📢 出来高急増度 rvol(20日) (倍)", 1.0, 5.0, 1.5, step=0.1)
 min_close_strength_strong = st.sidebar.slider("🔧 高値圏の強さ(本命) 0-1", 0.0, 1.0, 0.70)
 need_trend_or_breakout = st.sidebar.checkbox("✅ トレンド or ブレイク到達 を必須", value=True)
 
-# 表示モード
 st.sidebar.subheader("🧾 表示")
 show_mode = st.sidebar.radio("結果表示", ("A: 速報 + 本命（2テーブル）", "速報のみ"))
-
 debug = st.sidebar.checkbox("🧪 デバッグログ表示", value=False)
-
-# ✅ CSVも受け付ける
 uploaded_file = st.sidebar.file_uploader("リスト更新（CSV推奨）", type=["csv", "xls", "xlsx"])
 
 # =========================
 # 5. ユーティリティ
 # =========================
 def _market_key(market_type: str) -> str:
-    if market_type == "プライム":
-        return "プライム（内国株式）"
-    if market_type == "スタンダード":
-        return "スタンダード（内国株式）"
+    if market_type == "プライム": return "プライム（内国株式）"
+    if market_type == "スタンダード": return "スタンダード（内国株式）"
     return "グロース（内国株式）"
 
-
 def _fmt_oku_yen(x: float) -> str:
-    """億円表記"""
     return f"{float(x):,.0f}億円"
 
-
 def _calc_trading_value_oku(high: float, low: float, close: float, volume: float) -> float:
-    """売買代金（近似）を億円で（Typical Price × Volume）"""
     tp = (float(high) + float(low) + float(close)) / 3.0
     return (tp * float(volume)) / 1e8
 
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_master_from_bytes(file_bytes: bytes, filename: str) -> pd.DataFrame:
-    """CSV/XLSX/XLS を bytes から読み込む（キャッシュあり）"""
     name = (filename or "").lower()
-
-    if name.endswith(".csv"):
-        bio = BytesIO(file_bytes)
-        try:
-            return pd.read_csv(bio)
-        except UnicodeDecodeError:
-            bio.seek(0)
-            return pd.read_csv(bio, encoding="utf-8-sig")
-
-    # Excel
     bio = BytesIO(file_bytes)
-    try:
-        return pd.read_excel(bio, engine="openpyxl")
-    except Exception:
-        bio.seek(0)
-        return pd.read_excel(bio, engine="xlrd")
-
+    if name.endswith(".csv"):
+        try: return pd.read_csv(bio)
+        except: bio.seek(0); return pd.read_csv(bio, encoding="utf-8-sig")
+    try: return pd.read_excel(bio, engine="openpyxl")
+    except: bio.seek(0); return pd.read_excel(bio, engine="xlrd")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_master_from_url(url: str) -> pd.DataFrame:
-    with urllib.request.urlopen(url) as resp:
-        b = resp.read()
+    with urllib.request.urlopen(url) as resp: b = resp.read()
     filename = url.split("?")[0].split("/")[-1]
     return load_master_from_bytes(b, filename)
 
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_master_from_path(path: str) -> pd.DataFrame:
-    with open(path, "rb") as f:
-        b = f.read()
+    with open(path, "rb") as f: b = f.read()
     return load_master_from_bytes(b, os.path.basename(path))
 
-
 def get_tickers_from_df(df: pd.DataFrame, market_type="プライム"):
-    """必須列チェック＋市場抽出＋ETF除外"""
-    if df is None or df.empty:
-        return [], {}
-
+    if df is None or df.empty: return [], {}
     required_cols = ["市場・商品区分", "33業種区分", "コード", "銘柄名"]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        raise ValueError(
-            f"銘柄マスターの列名が違います。不足: {missing}\n"
-            f"現在の列: {list(df.columns)}\n"
-            f"必要列: {required_cols}"
-        )
-
     search_key = _market_key(market_type)
-
-    target_df = df[df["市場・商品区分"] == search_key]
-    target_df = target_df[target_df["33業種区分"] != "－"]  # ETF除外
-
-    tickers = []
-    ticker_info = {}
+    target_df = df[(df["市場・商品区分"] == search_key) & (df["33業種区分"] != "－")]
+    tickers, ticker_info = [], {}
     for _, row in target_df.iterrows():
-        code = str(row["コード"]).strip()
-        if code.endswith(".0"):
-            code = code[:-2]
+        code = str(row["コード"]).strip().replace(".0", "")
         t = f"{code}.T"
         tickers.append(t)
         ticker_info[t] = [str(row["銘柄名"]), str(row["33業種区分"])]
-
     return tickers, ticker_info
 
-
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_prices(batch, period="5d"):
-    """速報用（5d）: 30銘柄バッチで取得してキャッシュ"""
-    return yf.download(
-        batch,
-        period=period,
-        interval="1d",
-        progress=False,
-        group_by="ticker",
-        threads=True
-    )
-
+def fetch_prices(batch, period="20d"): # 新高値判定のため20dに拡張
+    return yf.download(batch, period=period, interval="1d", progress=False, group_by="ticker", threads=True)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_prices_long(batch, period="3mo"):
-    """本命用（3mo）: 安定性優先で threads=False 推奨"""
-    return yf.download(
-        batch,
-        period=period,
-        interval="1d",
-        progress=False,
-        group_by="ticker",
-        threads=False
-    )
-
+    return yf.download(batch, period=period, interval="1d", progress=False, group_by="ticker", threads=False)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_1570_prices(period="3mo"):
-    """1570専用：売買代金温度用（Typical Price × Volume）"""
-    return yf.download(
-        ["1570.T"],
-        period=period,
-        interval="1d",
-        progress=False,
-        group_by="ticker",
-        threads=False
-    )
-
+    return yf.download(["1570.T"], period=period, interval="1d", progress=False, group_by="ticker", threads=False)
 
 def safe_close_strength(row) -> float:
-    """(Close-Low)/(High-Low) 0〜1。High==Low対策あり"""
-    h = float(row["High"])
-    l = float(row["Low"])
-    c = float(row["Close"])
+    h, l, c = float(row["High"]), float(row["Low"]), float(row["Close"])
     rng = max(h - l, 1e-9)
     return (c - l) / rng
 
+def get_breakout_status(data: pd.DataFrame) -> str:
+    """新高値やブレイク状態を判定する"""
+    if len(data) < 2: return "通常"
+    latest = data.iloc[-1]
+    curr = float(latest["Close"])
+    hi = float(latest["High"])
+    
+    # 過去20日高値（当日除く）
+    hist_20 = data.iloc[:-1].tail(20)
+    if len(hist_20) < 10: return "通常"
+    high_20 = hist_20["High"].max()
+    
+    # ステータス判定
+    cs = safe_close_strength(latest)
+    
+    if curr > high_20:
+        return "🚀20日新高値"
+    elif hi > high_20:
+        return "👀ブレイク挑戦"
+    elif cs < 0.3:
+        return "⚠️上ヒゲ注意"
+    elif cs > 0.9:
+        return "🔥高値引け気配"
+    return "順調"
 
 def bc_filters(data: pd.DataFrame):
-    """
-    本命（継続・翌日）フィルター判定
-    - rvol20
-    - trend_up (5MA>25MA かつ Close>25MA)
-    - breakout_reach (Closeが直近20日高値に近い/超え)
-    - close_strength（高値圏引け）
-    """
-    if data is None or len(data) < 30:
-        return False, {}
-
+    if data is None or len(data) < 20: return False, {}
     latest = data.iloc[-1]
-
-    # rvol20
     vol20 = data["Volume"].rolling(20).mean().iloc[-1]
-    if pd.isna(vol20) or float(vol20) <= 0:
-        return False, {}
+    if pd.isna(vol20) or float(vol20) <= 0: return False, {}
     rvol20_val = float(latest["Volume"]) / float(vol20)
-
-    # close strength
     cs = safe_close_strength(latest)
-
-    # trend (5MA/25MA)
     ma5 = data["Close"].rolling(5).mean().iloc[-1]
     ma25 = data["Close"].rolling(25).mean().iloc[-1]
-    trend_up = (
-        (not pd.isna(ma5)) and (not pd.isna(ma25))
-        and (float(ma5) > float(ma25))
-        and (float(latest["Close"]) > float(ma25))
-    )
-
-    # breakout reach（直近20日高値）
+    trend_up = (not pd.isna(ma5)) and (not pd.isna(ma25)) and (float(ma5) > float(ma25)) and (float(latest["Close"]) > float(ma25))
     prev_20_high = data["High"].rolling(20).max().shift(1).iloc[-1]
     breakout_reach = False
-    if not pd.isna(prev_20_high):
-        breakout_reach = float(latest["Close"]) > float(prev_20_high) * 0.995  # 0.5%手前からOK
-
-    details = {
-        "rvol20": rvol20_val,
-        "close_strength": cs,
-        "trend_up": trend_up,
-        "breakout": breakout_reach
-    }
+    if not pd.isna(prev_20_high): breakout_reach = float(latest["Close"]) > float(prev_20_high) * 0.995
+    details = {"rvol20": rvol20_val, "close_strength": cs, "trend_up": trend_up, "breakout": breakout_reach}
     return True, details
 
-
 # =========================
-# 6. メイン画面
-# =========================
-st.title(f"⚡️ {target_market}・激辛スキャナー")
-
-# =========================
-# 7. 市場天気予報（1570：価格＋売買代金温度）
+# 6. 市場天気予報
 # =========================
 def check_market_condition():
     st.markdown("### 🌡 マーケット天気予報 (日経レバ 1570)")
-
     try:
-        # --- 価格（寄付比・前日比） ---
         df_m = fetch_prices(["1570.T"], period="5d")
-        if df_m is None or df_m.empty:
-            st.warning("1570データが取得できませんでした。")
-            return
-
-        if isinstance(df_m.columns, pd.MultiIndex):
-            s = df_m["1570.T"].dropna()
-        else:
-            s = df_m.dropna()
-
-        if len(s) < 2:
-            st.warning("1570データが不足しています。")
-            return
-
-        latest = s.iloc[-1]
-        prev = s.iloc[-2]
-
-        curr = float(latest["Close"])
-        op = float(latest["Open"])
-        prev_cl = float(prev["Close"])
-
-        op_ch = (curr - op) / op * 100
-        day_ch = (curr - prev_cl) / prev_cl * 100
-
-        # --- 売買代金温度（近似：Typical Price × Volume）---
-        tv_ratio = None
-        tv_today = None
-        tv_avg20 = None
-        tv_ch_pct = None
-
-        try:
-            df_tv = fetch_1570_prices(period="3mo")
-            if df_tv is not None and (not df_tv.empty):
-                if isinstance(df_tv.columns, pd.MultiIndex):
-                    tv = df_tv["1570.T"].dropna()
-                else:
-                    tv = df_tv.dropna()
-
-                # 最低2日あれば前日比は算出できる
-                if len(tv) >= 2:
-                    tv_latest = tv.iloc[-1]
-                    tv_prev = tv.iloc[-2]
-
-                    # Typical Price × Volume（億円）
-                    tv_today = _calc_trading_value_oku(
-                        tv_latest["High"], tv_latest["Low"], tv_latest["Close"], tv_latest["Volume"]
-                    )
-                    tv_yday = _calc_trading_value_oku(
-                        tv_prev["High"], tv_prev["Low"], tv_prev["Close"], tv_prev["Volume"]
-                    )
-                    tv_ch_pct = (tv_today - tv_yday) / tv_yday * 100 if tv_yday > 0 else 0.0
-
-                    # 直近20日平均（今日を除いて平均）
-                    tail = tv.tail(21).copy()
-                    tail["TV"] = (((tail["High"] + tail["Low"] + tail["Close"]) / 3.0) * tail["Volume"]) / 1e8
-
-                    if len(tail) >= 3:
-                        tv_avg20 = float(tail["TV"].iloc[:-1].mean())
-                    else:
-                        tv_avg20 = float(tail["TV"].mean())
-
-                    tv_ratio = (tv_today / tv_avg20) if (tv_avg20 and tv_avg20 > 0) else None
-
-        except Exception as e:
-            if debug:
-                st.warning(f"売買代金温度の取得に失敗: {e}")
-
-        # =========================
-        # 統合ステータス（上昇/下落 × 活況/閑散）
-        # =========================
+        if df_m is None or df_m.empty: return
+        s = df_m["1570.T"].dropna() if isinstance(df_m.columns, pd.MultiIndex) else df_m.dropna()
+        if len(s) < 2: return
+        latest, prev = s.iloc[-1], s.iloc[-2]
+        curr, op, prev_cl = float(latest["Close"]), float(latest["Open"]), float(prev["Close"])
+        op_ch, day_ch = (curr - op) / op * 100, (curr - prev_cl) / prev_cl * 100
+        
+        # 売買代金温度
+        df_tv = fetch_1570_prices(period="3mo")
+        tv = df_tv["1570.T"].dropna() if isinstance(df_tv.columns, pd.MultiIndex) else df_tv.dropna()
+        tv_latest, tv_prev = tv.iloc[-1], tv.iloc[-2]
+        tv_today = _calc_trading_value_oku(tv_latest["High"], tv_latest["Low"], tv_latest["Close"], tv_latest["Volume"])
+        tv_yday = _calc_trading_value_oku(tv_prev["High"], tv_prev["Low"], tv_prev["Close"], tv_prev["Volume"])
+        tv_avg20 = (((tv["High"] + tv["Low"] + tv["Close"]) / 3.0) * tv["Volume"] / 1e8).iloc[:-1].tail(20).mean()
+        tv_ratio = tv_today / tv_avg20
+        
         updown = "上昇" if day_ch >= 0 else "下落"
-
-        # heat 判定（いまの tv_ratio をそのまま使う）
-        heat = "普通"
-        if tv_ratio is not None:
-            if tv_ratio >= 1.15:
-                heat = "活況"
-            elif tv_ratio <= 0.90:
-                heat = "閑散"
-            else:
-                heat = "普通"
-
-        # 4象限で「意味」を言い切る
-        if updown == "上昇" and heat == "活況":
-            merged = "☀️ 買い優勢（上昇×活況）"
-            note = "（順張り有利 / ブレイクが機能しやすい）"
-        elif updown == "上昇" and heat == "閑散":
-            merged = "🌤 薄い上げ（上昇×閑散）"
-            note = "（だまし注意 / 継続性に注意）"
-        elif updown == "下落" and heat == "活況":
-            merged = "☔️ 売り優勢（下落×活況）"
-            note = "（投げ・ヘッジ増の可能性）"
-        elif updown == "下落" and heat == "閑散":
-            merged = "☁️ 弱い下げ（下落×閑散）"
-            note = "（様子見多め / 反発も起きやすい）"
-        else:
-            # 普通（中間）はニュートラルに
-            merged = f"⛅️ {updown}（{heat}）"
-            if updown == "上昇":
-                note = "（買いは優勢だが熱量は普通）"
-            else:
-                note = "（売りは優勢だが熱量は普通）"
-
-        st.info(f"統合ステータス: **{merged}** {note}")
-
-
-        # =========================
-        # 表示（上段：価格、下段：売買代金温度）
-        # =========================
+        heat = "活況" if tv_ratio >= 1.15 else "閑散" if tv_ratio <= 0.90 else "普通"
+        merged = "☀️ 買い優勢" if updown=="上昇" and heat=="活況" else "☔️ 売り優勢" if updown=="下落" and heat=="活況" else f"⛅️ {updown}({heat})"
+        st.info(f"統合ステータス: **{merged}**")
         c1, c2, c3 = st.columns(3)
-        c1.metric("現在値", f"{curr:,.0f}円")
-        c2.metric("寄付比", f"{op_ch:+.2f}%")
-        c3.metric("前日比", f"{day_ch:+.2f}%")
+        c1.metric("寄付比", f"{op_ch:+.2f}%")
+        c2.metric("前日比", f"{day_ch:+.2f}%")
+        c3.metric("売買温度", f"{tv_ratio:.2f}x", heat)
+    except: st.warning("天気予報の取得に失敗しました。")
 
-        st.markdown("#### 💹 1570 売買代金温度（近似）")
-
-        if tv_ratio is None or tv_today is None or tv_avg20 is None or tv_ch_pct is None:
-            st.warning("売買代金温度を算出できませんでした（データ不足/取得失敗）。")
-            if debug:
-                st.write("tv_ratio:", tv_ratio, "tv_today:", tv_today, "tv_avg20:", tv_avg20, "tv_ch_pct:", tv_ch_pct)
-        else:
-            t1, t2, t3 = st.columns(3)
-            t1.metric("売買代金（今日）", _fmt_oku_yen(tv_today), f"{tv_ch_pct:+.1f}%（前日比）")
-            t2.metric("平均比（直近20日）", f"{tv_ratio:.2f}x", f"平均 {_fmt_oku_yen(tv_avg20)}")
-            t3.metric("読み方", f"{updown} × {heat}", "方向=前日比 / 熱量=平均比")
-
-        st.divider()
-
-    except Exception as e:
-        if debug:
-            st.warning(f"天気予報取得エラー: {e}")
-        else:
-            st.warning("天気予報の取得に失敗しました。")
-
-
-# ✅ ここが超重要：表示するために呼び出す
 check_market_condition()
 
 # =========================
-# 8. 銘柄マスター読み込み
+# 7. スキャン
 # =========================
-tickers = []
-info_db = {}
-master_source = "未取得"
-df_master = None
+tickers, info_db = [], {}
+if uploaded_file:
+    df_master = load_master_from_bytes(uploaded_file.read(), uploaded_file.name)
+    tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
+else:
+    df_master = load_master_from_url(GITHUB_CSV_RAW_URL)
+    tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
 
-try:
-    if uploaded_file is not None:
-        b = uploaded_file.read()
-        df_master = load_master_from_bytes(b, uploaded_file.name)
-        tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
-        master_source = f"アップロード: {uploaded_file.name}"
-    else:
-        if GITHUB_CSV_RAW_URL:
-            df_master = load_master_from_url(GITHUB_CSV_RAW_URL)
-            tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
-            master_source = "GitHub(CSV)"
-        elif LOCAL_CSV:
-            df_master = load_master_from_path(LOCAL_CSV)
-            tickers, info_db = get_tickers_from_df(df_master, market_type=target_market)
-            master_source = f"ローカル: {LOCAL_CSV}"
-        else:
-            st.error("銘柄マスターがありません。CSVをアップロードするか、GitHub raw URLを設定してください。")
-            st.stop()
-
-except Exception as e:
-    st.error("銘柄マスターの読み込みに失敗しました。CSV列名や文字コード、URLを確認してください。")
-    if debug:
-        st.exception(e)
-    st.stop()
-
-st.sidebar.caption(f"📌 マスター参照元: {master_source}")
-st.sidebar.caption(f"📌 対象銘柄数(市場抽出後): {len(tickers)}")
-
-if df_master is not None and len(tickers) == 0:
-    st.error("銘柄リストが0件です。CSVの市場表記やETF除外条件の結果、対象が無い可能性があります。")
-    if debug:
-        st.write(df_master["市場・商品区分"].value_counts().head(10))
-        st.write(df_master["33業種区分"].value_counts().head(10))
-    st.stop()
-
-# =========================
-# 9. スキャン（速報 → 本命）
-# =========================
 st.markdown("### 🔎 スキャン")
-st.caption("🚀 速報は“今強い”を拾う（10:00向け）。📈 本命は速報候補から“継続/翌日期待”を絞る。")
-
 if st.button(f"📡 {target_market}をスキャン開始", type="primary"):
     status_area = st.empty()
     bar = st.progress(0)
-
-    # --- 速報（全銘柄を5dで見る） ---
     fast_results = []
     batch_size = 30
     total = len(tickers)
 
     for i in range(0, total, batch_size):
         batch = tickers[i:i + batch_size]
-        bar.progress(min(i / max(total, 1), 1.0))
-        status_area.text(f"速報スキャン中... {i} / {total} 銘柄完了")
-
+        bar.progress(min(i / total, 1.0))
+        status_area.text(f"スキャン中... {i} / {total}")
         try:
-            time.sleep(0.02)
-            df = fetch_prices(batch, period="5d")
-            if df is None or df.empty:
-                continue
+            df = fetch_prices(batch, period="20d") # 20日間の最高値を見るために期間を20dに
+            if df is None or df.empty: continue
+            if not isinstance(df.columns, pd.MultiIndex): df = pd.concat({batch[0]: df}, axis=1)
+            
+            for t in batch:
+                if t not in df.columns.levels[0]: continue
+                data = df[t].dropna()
+                if len(data) < 2: continue
+                latest, prev = data.iloc[-1], data.iloc[-2]
+                curr, op, vol = float(latest["Close"]), float(latest["Open"]), float(latest["Volume"])
+                
+                # 基本フィルター
+                val = (curr * vol) / 1e8
+                if val < min_trading_value: continue
+                avg_vol5 = data["Volume"].tail(5).mean()
+                rvol5 = vol / avg_vol5 if avg_vol5 > 0 else 0
+                if rvol5 < min_rvol5: continue
+                op_ch = (curr - op) / op * 100
+                day_ch = (curr - float(prev["Close"])) / float(prev["Close"]) * 100
+                if require_positive_from_open and op_ch <= 0: continue
+                
+                # ★【新設】ステータス判定
+                stat = get_breakout_status(data)
+                
+                info = info_db.get(t, ["-", "-"])
+                fast_results.append({
+                    "ステータス": stat, # 高値圏の代わりにこれを入れる
+                    "コード": t.replace(".T", ""),
+                    "銘柄名": info[0],
+                    "業種": info[1],
+                    "売買代金": val,
+                    "rvol5": rvol5,
+                    "寄付比": op_ch,
+                    "前日比": day_ch,
+                    "現在値": curr,
+                    "sort": val
+                })
+        except: continue
 
-            if not isinstance(df.columns, pd.MultiIndex):
-                df = pd.concat({batch[0]: df}, axis=1)
+    bar.progress(1.0); status_area.empty()
 
-            available = set(df.columns.levels[0].tolist())
-            valid_tickers = [t for t in batch if t in available]
-
-            for t in valid_tickers:
-                try:
-                    data = df[t].dropna()
-                    if len(data) < 2:
-                        continue
-
-                    latest = data.iloc[-1]
-                    prev = data.iloc[-2]
-
-                    curr = float(latest["Close"])
-                    op = float(latest["Open"])
-                    vol = float(latest["Volume"])
-
-                    # 流動性（億円） ※速報テーブルの売買代金は従来通り Close×Volume でOK
-                    val = (curr * vol) / 100000000
-                    if val < min_trading_value:
-                        continue
-
-                    # rvol(5d)
-                    avg_vol5 = float(data["Volume"].mean())
-                    if avg_vol5 <= 0:
-                        continue
-                    rvol5 = vol / avg_vol5
-                    if rvol5 < min_rvol5:
-                        continue
-
-                    # 価格変化
-                    op_ch = (curr - op) / op * 100
-                    day_ch = (curr - float(prev["Close"])) / float(prev["Close"]) * 100
-
-                    # 寄り天抑制（任意）
-                    if require_positive_from_open and op_ch <= 0:
-                        continue
-
-                    # 高値圏の強さ（速報）
-                    cs_fast = safe_close_strength(latest)
-                    if cs_fast < min_close_strength_fast:
-                        continue
-
-                    status = "🚀 速報"
-                    if op_ch > 1.0 and day_ch > 2.0:
-                        status = "🔥🔥 速報強"
-                    elif op_ch > 2.0:
-                        status = "🚀 急伸"
-
-                    info = info_db.get(t, ["-", "-"])
-                    fast_results.append({
-                        "状態": status,
-                        "コード": t.replace(".T", ""),
-                        "銘柄名": info[0],
-                        "売買代金": val,
-                        "rvol5": rvol5,
-                        "寄付比": op_ch,
-                        "前日比": day_ch,
-                        "現在値": curr,
-                        "高値圏(速報)": cs_fast,
-                        "sort": val
-                    })
-
-                except Exception as e:
-                    if debug:
-                        st.write(f"[速報:{t}] エラー: {e}")
-                    continue
-
-        except Exception as e:
-            if debug:
-                st.write(f"速報バッチ取得エラー({i}-{i+batch_size}): {e}")
-            continue
-
-    bar.progress(1.0)
-    status_area.empty()
-
-    # 表示：速報
-    st.markdown("## 🚀 速報（10:00向け）")
     if fast_results:
+        st.markdown("## 🚀 速報（10:00向け）")
         df_fast = pd.DataFrame(fast_results).sort_values("sort", ascending=False)
+        show_fast = df_fast[["ステータス", "コード", "銘柄名", "業種", "売買代金", "rvol5", "寄付比", "前日比", "現在値"]].copy()
+        # フォーマット適用
+        show_fast["売買代金"] = show_fast["売買代金"].map(lambda x: f"{x:.1f}億円")
+        show_fast["rvol5"] = show_fast["rvol5"].map(lambda x: f"{x:.2f}")
+        show_fast["寄付比"] = show_fast["寄付比"].map(lambda x: f"{x:+.2f}%")
+        show_fast["前日比"] = show_fast["前日比"].map(lambda x: f"{x:+.2f}%")
+        show_fast["現在値"] = show_fast["現在値"].map(lambda x: f"{x:,.0f}")
+        st.dataframe(show_fast, use_container_width=True, hide_index=True, height=500)
 
-        show_fast = df_fast[["状態", "コード", "銘柄名", "売買代金", "rvol5", "寄付比", "前日比", "現在値", "高値圏(速報)"]].copy()
-        show_fast["売買代金"] = show_fast["売買代金"].map(lambda x: f"{float(x):.1f}億円")
-        show_fast["rvol5"] = show_fast["rvol5"].map(lambda x: f"{float(x):.2f}")
-        show_fast["寄付比"] = show_fast["寄付比"].map(lambda x: f"+{float(x):.2f}%" if float(x) > 0 else f"{float(x):.2f}%")
-        show_fast["前日比"] = show_fast["前日比"].map(lambda x: f"+{float(x):.2f}%" if float(x) > 0 else f"{float(x):.2f}%")
-        show_fast["現在値"] = show_fast["現在値"].map(lambda x: f"{float(x):,.0f}")
-        show_fast["高値圏(速報)"] = show_fast["高値圏(速報)"].map(lambda x: f"{float(x):.2f}")
-
-        st.success(f"速報ヒット: {len(df_fast)}件")
-        st.dataframe(show_fast, use_container_width=True, hide_index=True, height=520)
+        # 本命スキャン
+        if enable_strong_scan:
+            st.markdown("## 📈 本命（継続・翌日）")
+            cand_tickers = [f"{c}.T" for c in df_fast.head(max_candidates_for_strong)["コード"]]
+            strong_results = []
+            for j in range(0, len(cand_tickers), 30):
+                sub = cand_tickers[j:j+30]
+                df_long = fetch_prices_long(sub)
+                if not isinstance(df_long.columns, pd.MultiIndex): df_long = pd.concat({sub[0]: df_long}, axis=1)
+                for t in sub:
+                    if t not in df_long.columns.levels[0]: continue
+                    data_l = df_long[t].dropna()
+                    ok, d = bc_filters(data_l)
+                    if ok and d["rvol20"] >= min_rvol20 and d["close_strength"] >= min_close_strength_strong:
+                        if need_trend_or_breakout and not (d["trend_up"] or d["breakout"]): continue
+                        row = df_fast[df_fast["コード"]==t.replace(".T","")].iloc[0].to_dict()
+                        row.update({"rvol20": d["rvol20"], "本命強度": d["close_strength"], "トレンド": "✅" if d["trend_up"] else "-", "ブレイク": "✅" if d["breakout"] else "-"})
+                        strong_results.append(row)
+            
+            if strong_results:
+                df_st = pd.DataFrame(strong_results)
+                st.dataframe(df_st[["ステータス", "コード", "銘柄名", "売買代金", "rvol20", "トレンド", "ブレイク", "本命強度", "現在値"]], use_container_width=True, hide_index=True)
     else:
-        st.warning("速報条件に合う銘柄はありませんでした。")
-
-    # 速報のみなら終了
-    if show_mode == "速報のみ" or (not enable_strong_scan) or (not fast_results):
-        st.stop()
-
-    # --- 本命（速報候補だけを3moで精査） ---
-    st.markdown("## 📈 本命（継続・翌日）")
-    st.caption("速報候補から、rvol20・トレンド・ブレイク到達・高値圏の強さで“残るやつ”だけを抽出します。")
-
-    df_fast_sorted = pd.DataFrame(fast_results).sort_values("sort", ascending=False)
-    df_fast_cand = df_fast_sorted.head(int(max_candidates_for_strong)).copy()
-    cand_tickers = [f"{c}.T" for c in df_fast_cand["コード"].tolist()]
-
-    status_area = st.empty()
-    bar = st.progress(0)
-
-    strong_results = []
-
-    chunk = 30
-    total_cand = len(cand_tickers)
-    st.caption(f"本命候補: {total_cand}（上限 {max_candidates_for_strong}）")
-
-    for j in range(0, total_cand, chunk):
-        sub = cand_tickers[j:j + chunk]
-        status_area.text(f"本命 精査中... {j}/{total_cand}（取得 {len(sub)}）")
-        bar.progress(min(j / max(total_cand, 1), 1.0))
-
-        try:
-            df_long = fetch_prices_long(sub, period="3mo")
-        except Exception as e:
-            st.warning(f"本命データ取得に失敗: chunk {j}-{j+chunk}（スキップ）")
-            if debug:
-                st.write(e)
-            continue
-
-        if df_long is None or df_long.empty:
-            continue
-
-        if not isinstance(df_long.columns, pd.MultiIndex):
-            df_long = pd.concat({sub[0]: df_long}, axis=1)
-
-        available_long = set(df_long.columns.levels[0].tolist())
-
-        for t in sub:
-            if t not in available_long:
-                continue
-
-            try:
-                data = df_long[t].dropna()
-                ok, d = bc_filters(data)
-                if not ok:
-                    continue
-
-                if d["rvol20"] < min_rvol20:
-                    continue
-                if d["close_strength"] < min_close_strength_strong:
-                    continue
-                if need_trend_or_breakout and not (d["trend_up"] or d["breakout"]):
-                    continue
-
-                row_fast = df_fast_cand[df_fast_cand["コード"] == t.replace(".T", "")].iloc[0].to_dict()
-                row_fast["rvol20"] = d["rvol20"]
-                row_fast["高値圏(本命)"] = d["close_strength"]
-                row_fast["トレンド"] = "✅" if d["trend_up"] else "-"
-                row_fast["ブレイク"] = "✅" if d["breakout"] else "-"
-                row_fast["sort_strong"] = float(row_fast["売買代金"]) * float(d["rvol20"])
-                row_fast["状態"] = "📈 本命"
-                strong_results.append(row_fast)
-
-            except Exception as e:
-                if debug:
-                    st.write(f"[本命:{t}] エラー: {e}")
-                continue
-
-    bar.progress(1.0)
-    status_area.empty()
-
-    st.caption(f"✅ 本命判定完了: {len(strong_results)} 件")
-
-    if strong_results:
-        df_strong = pd.DataFrame(strong_results).sort_values("sort_strong", ascending=False)
-
-        show_strong = df_strong[
-            ["状態", "コード", "銘柄名", "売買代金", "rvol5", "rvol20", "寄付比", "前日比", "現在値",
-             "トレンド", "ブレイク", "高値圏(速報)", "高値圏(本命)"]
-        ].copy()
-
-        show_strong["売買代金"] = show_strong["売買代金"].map(lambda x: f"{float(x):.1f}億円")
-        show_strong["rvol5"] = show_strong["rvol5"].map(lambda x: f"{float(x):.2f}")
-        show_strong["rvol20"] = show_strong["rvol20"].map(lambda x: f"{float(x):.2f}")
-        show_strong["寄付比"] = show_strong["寄付比"].map(lambda x: f"+{float(x):.2f}%" if float(x) > 0 else f"{float(x):.2f}%")
-        show_strong["前日比"] = show_strong["前日比"].map(lambda x: f"+{float(x):.2f}%" if float(x) > 0 else f"{float(x):.2f}%")
-        show_strong["現在値"] = show_strong["現在値"].map(lambda x: f"{float(x):,.0f}")
-        show_strong["高値圏(速報)"] = show_strong["高値圏(速報)"].map(lambda x: f"{float(x):.2f}")
-        show_strong["高値圏(本命)"] = show_strong["高値圏(本命)"].map(lambda x: f"{float(x):.2f}")
-
-        st.success(f"本命ヒット: {len(df_strong)}件（候補 {len(df_fast_cand)}件から精査）")
-        st.dataframe(show_strong, use_container_width=True, hide_index=True, height=520)
-    else:
-        st.warning("本命条件に合う銘柄はありませんでした（閾値が厳しい可能性あり）。")
+        st.warning("ヒットなし")
